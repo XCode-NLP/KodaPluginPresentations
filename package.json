@@ -1,0 +1,30 @@
+{
+  "name": "koda-plugin-presentations",
+  "version": "0.2.0",
+  "scripts": {
+    "build": "node build.mjs",
+    "validate": "npm run build && koda-plugin validate .",
+    "pack": "npm run build && node scripts/pack.mjs",
+    "dev": "npm run build && koda-plugin dev .",
+    "test": "vitest run"
+  },
+  "type": "module",
+  "dependencies": {
+    "@aiden0z/pptx-renderer": "1.4.0",
+    "jspdf": "4.2.1",
+    "pptxgenjs": "4.0.1"
+  },
+  "private": true,
+  "overrides": {
+    "image-size": "2.1.0"
+  },
+  "devDependencies": {
+    "@kodadev/desktop-plugin-sdk": "1.0.0",
+    "esbuild": "0.28.2",
+    "vitest": "4.1.12",
+    "vite": "8.3.8"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

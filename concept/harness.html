@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="../ui/tokens.css"><link rel="stylesheet" href="../ui/style.css"></head><body>
+<script type="module">
+import { apply, create, travel, selectionFor } from "../src/model.js";
+const L={title:"Koda Desktop",subtitle:"Агент рядом с вами",text:"Текст",caption:"Подпись"};
+let s=null, sel=null; const subs=[];
+const out=()=>s&&({document:s.document,version:s.version,selection:sel=selectionFor(s.document,sel),canUndo:!!s.undo.length,canRedo:!!s.redo.length});
+const q=new URLSearchParams(location.search);
+window.kodaPlugin={info:async()=>({language:"ru",sessionId:"s1",theme:q.get("theme")||"dark"}),subscribe:f=>subs.push(f),
+ call:async(m,p)=>{if(m==="state")return out();if(m==="create"){s={version:1,document:create(p.title,L),undo:[],redo:[]};return out()}
+  if(m==="change"){s=p.direction?travel(s,p.expectedVersion,p.direction):apply(s,p.expectedVersion,p.operations);return out()}
+  if(m==="select"){sel=p.selection;return}if(m==="list")return[];return null}};
+if(q.get("deck")){s={version:1,document:create("Koda Desktop: питч",L),undo:[],redo:[]};}
+const r=await fetch("../ui/index.html").then(r=>r.text());
+const body=new DOMParser().parseFromString(r,"text/html").body;body.querySelector("script").remove();
+document.body.append(...body.childNodes);
+await import("../ui/app.js");
+</script></body></html>

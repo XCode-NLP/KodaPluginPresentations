@@ -1,0 +1,403 @@
+{
+  "id": "dev.koda.presentations",
+  "name": {
+    "ru": "Презентации",
+    "en": "Presentations"
+  },
+  "description": {
+    "ru": "Презентации рядом с чатом",
+    "en": "Presentations alongside chat"
+  },
+  "version": "0.2.0",
+  "publisher": "Koda Examples",
+  "engines": {
+    "koda": ">=1.4.0",
+    "sdk": "1"
+  },
+  "main": "main.js",
+  "ui": "ui/index.html",
+  "permissions": [
+    "project.read",
+    "project.write",
+    "process.run",
+    "chat.context",
+    "agent.tools",
+    "chat.composer"
+  ],
+  "contributes": {
+    "chatPanes": [
+      {
+        "id": "presentations",
+        "title": {
+          "ru": "Презентации",
+          "en": "Presentations"
+        }
+      }
+    ],
+    "agentTools": [
+      {
+        "name": "create_presentation",
+        "description": "Create and activate a presentation in the current chat.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "get_presentation",
+        "description": "Read the active presentation, its version, slide and object IDs, and the current selection.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "get_slide",
+        "description": "Read editable objects and their formatting on a slide.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "documentId": {
+              "type": "string"
+            },
+            "slideId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "documentId",
+            "slideId"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "apply_presentation_operations",
+        "description": "Apply one atomic operation batch to an expected version. Operations use stable IDs: rename {title}; setTheme {theme,colors?,fonts?}; addSlide {slide,index?}; deleteSlide {slideId}; moveSlide {slideId,index}; updateSlide {slideId,patch:{background?,notes?}}; addObject {slideId,object}; deleteObject {slideId,objectId}; moveObject {slideId,objectId,index}; updateObject {slideId,objectId,patch}. Color, font and size fields accept theme role names (accent, muted, surface, heading, body, h2, small …) and then follow theme switches. A new object may be partial: {kind,text?,x,y,w,h,…}; missing fields come from the theme. Charts: addObject {kind:\"chart\",chartType:column|bar|line|area|pie|doughnut,categories:[labels],series:[{name,values:[one number per category]}],x,y,w,h,stacked?,showLegend?,showValues?,unit?,highlight?(category index, one-series column/bar)}; colors follow the theme chart1–5 roles, and the chart exports to PowerPoint as an editable chart. Change data with updateObject on the same fields. Prefer add_layout_slide for whole slides. The answer lists layout issues of the touched slides. New image objects come only from add_image.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "documentId": {
+              "type": "string"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "rename",
+                      "setTheme",
+                      "addSlide",
+                      "deleteSlide",
+                      "moveSlide",
+                      "updateSlide",
+                      "addObject",
+                      "deleteObject",
+                      "moveObject",
+                      "updateObject"
+                    ]
+                  },
+                  "slideId": {
+                    "type": "string",
+                    "description": "ID of an existing slide (from get_presentation). Required for deleteSlide, moveSlide, updateSlide, addObject, deleteObject, moveObject, updateObject. Never named \"id\"."
+                  },
+                  "objectId": {
+                    "type": "string",
+                    "description": "ID of an object on that slide. Required for deleteObject, moveObject, updateObject."
+                  },
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Destination position for moveSlide/moveObject, optional insert position for addSlide."
+                  },
+                  "title": {
+                    "type": "string",
+                    "description": "rename only."
+                  },
+                  "theme": {
+                    "type": "string",
+                    "description": "setTheme only."
+                  },
+                  "colors": {
+                    "type": "object",
+                    "description": "setTheme only."
+                  },
+                  "fonts": {
+                    "type": "object",
+                    "description": "setTheme only."
+                  },
+                  "slide": {
+                    "type": "object",
+                    "description": "addSlide only: the full slide."
+                  },
+                  "object": {
+                    "type": "object",
+                    "description": "addObject only."
+                  },
+                  "patch": {
+                    "type": "object",
+                    "description": "updateSlide or updateObject only."
+                  }
+                }
+              }
+            }
+          },
+          "required": [
+            "documentId",
+            "expectedVersion",
+            "operations"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "add_image",
+        "description": "Insert a PNG file from the project (path relative to the project root, at most 2 MB) as an image object on a slide. Convert JPEG/WebP/SVG to PNG first. Coordinates are in slide units (see document width/height). Omitted w/h keep the aspect ratio; omitted x/y center the image; index sets the layer (0 is the bottom). Image objects can only be created by this tool; move or resize them later with updateObject.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "documentId": {
+              "type": "string"
+            },
+            "slideId": {
+              "type": "string"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "source": {
+              "type": "string"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "w": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "h": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "documentId",
+            "slideId",
+            "expectedVersion",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "undo_presentation_change",
+        "description": "Undo the latest edit batch at the expected version.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "documentId": {
+              "type": "string"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "documentId",
+            "expectedVersion"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "get_design_system",
+        "description": "Read the design guide (workflow, writing and visual rules), the theme catalog and the layout catalog with slot descriptions. Call once before building or restyling a deck.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "set_presentation_theme",
+        "description": "Switch the deck to a theme from get_design_system. Objects that use role names (accent, h2, heading) are repainted; colors/fonts optionally override single tokens, e.g. {\"accent\":\"#e4002b\"} for a brand color.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "documentId": {
+              "type": "string"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "theme": {
+              "type": "string"
+            },
+            "colors": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$"
+              }
+            },
+            "fonts": {
+              "type": "object",
+              "properties": {
+                "heading": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "documentId",
+            "expectedVersion",
+            "theme"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "add_layout_slide",
+        "description": "Add a slide built from a layout of the catalog: fill its named slots with content and the engine places, styles and fits it on the grid in the current theme. Image slots take project PNG paths. tone overrides the layout's background: default, accent or inverse. replaceSlideId rebuilds an existing slide in place. notes become speaker notes. The answer lists layout issues of the new slide.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "documentId": {
+              "type": "string"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "layout": {
+              "type": "string"
+            },
+            "slots": {
+              "type": "object"
+            },
+            "tone": {
+              "type": "string",
+              "enum": [
+                "default",
+                "accent",
+                "inverse"
+              ]
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "replaceSlideId": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "documentId",
+            "expectedVersion",
+            "layout",
+            "slots"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "check_presentation",
+        "description": "Check slides for design problems: text overflow, overlap, low contrast, unsafe margins, near-miss alignment, tiny fonts, too many words, colors or sizes, leftover placeholders, repeated layouts. Each issue names the slide, the object and a fix. Omit slideIds to check the whole deck.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "documentId": {
+              "type": "string"
+            },
+            "slideIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100
+            }
+          },
+          "required": [
+            "documentId"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "render_slides",
+        "description": "Render up to 8 slides to PNG files in the project (presentations/<id>/previews/) so you can look at them with your file reading tool and fix visual problems. Needs the Presentations panel open in this chat. Omit slideIds to render the first 8 slides.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "documentId": {
+              "type": "string"
+            },
+            "slideIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8
+            }
+          },
+          "required": [
+            "documentId"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": true
+      }
+    ]
+  }
+}

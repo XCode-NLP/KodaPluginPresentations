@@ -1,0 +1,119 @@
+:root {
+  /* Koda design system v2. Colours (OKLCH) and the shared geometry are generated
+     from src/shared/design/palette.ts by `npm run design:tokens`; edit them there.
+     Dark values live here, light ones on .app[data-theme="light"] in layout.css. */
+  /* @design-tokens:dark:start */
+  --bg: oklch(0.185 0.006 285); /* #121215 */
+  --surface: oklch(0.215 0.006 285); /* #19191c */
+  --surface-raised: oklch(0.255 0.006 285); /* #222226 */
+  --border: oklch(0.29 0.006 285); /* #2b2b2e */
+  --border-strong: oklch(0.525 0.006 285); /* #6a6a6e */
+  --text: oklch(0.94 0.004 285); /* #ebebee */
+  --text-muted: oklch(0.775 0.006 285); /* #b5b5b9 */
+  --text-subtle: oklch(0.585 0.006 285); /* #7b7b7f */
+  --accent: oklch(0.54 0.24 315); /* #a025cb */
+  --accent-text: oklch(0.8 0.14 315); /* #e0a1fb */
+  --accent-soft: oklch(0.27 0.05 315); /* #301e37 */
+  --on-accent: oklch(1 0 0); /* #ffffff */
+  --danger: oklch(0.8 0.11 25); /* #fda19a */
+  --success: oklch(0.78 0.17 150); /* #56d57b */
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.32);
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 20px;
+  --space-8: 24px;
+  --space-9: 32px;
+  --space-10: 40px;
+  --space-11: 56px;
+  --control-xs: 24px;
+  --control-sm: 28px;
+  --control-md: 32px;
+  --control-lg: 36px;
+  --control-xl: 40px;
+  --control-2xl: 48px;
+  --icon-xs: 12px;
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 20px;
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-button: 12px;
+  --radius-well: 12px;
+  --radius-card: 16px;
+  --radius-pill: 9999px;
+  --text-min: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  /* @design-tokens:dark:end */
+
+  --attachment-preview-width: 200px;
+  --attachment-preview-height: 120px;
+
+  /* Scrollbars take layout width, so their gutter is one grid step and is
+     reserved even when idle — otherwise scrolled columns sit off the rail. */
+  --scrollbar-size: 8px;
+
+  /* Reading rail: transcript, composer and approval bar share one column. */
+  --announcement-card-width: 620px;
+  --announcement-slider-height: 720px;
+  --announcement-art-width: 440px;
+  --announcement-art-height: 208px;
+  --announcement-art-height-narrow: 200px;
+  --announcement-art-height-compact: 184px;
+  --announcement-phone-width: 192px;
+
+  --rail-width: 860px;
+  --rail-gutter: 28px;
+  --rail-pad: max(var(--rail-gutter), calc((100% - var(--rail-width)) / 2));
+  --rail-pad-scrolled: calc(max(var(--rail-gutter), calc((100% - var(--rail-width)) / 2)) - var(--scrollbar-size));
+
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  color-scheme: dark;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Legacy names from the v1 brand palette, kept as aliases so existing rules
+   follow the v2 palette. Declared on .app too so they resolve per theme. */
+:root,
+.app {
+  --electric-violet: var(--accent);
+  --hot-pink: var(--accent);
+  --spark-gold: var(--accent-text);
+  --coral-flame: var(--accent);
+  --rose-beam: var(--accent);
+  --emerald-signal: var(--success);
+  --cyan-signal: var(--accent-text);
+  --error-red: var(--danger);
+  --info-blue: var(--text-muted);
+  --gradient-primary: linear-gradient(var(--accent), var(--accent));
+  --gradient-warm: linear-gradient(var(--accent), var(--accent));
+  --gradient-page: linear-gradient(var(--bg), var(--bg));
+  --shadow-glass-card: none;
+  --shadow-accent-glow: none;
+  --surface-shell-dark: var(--surface);
+  --surface-canvas-dark: var(--bg);
+  --surface-well-dark: var(--surface-raised);
+  --surface-shell-light: #f6f6fb;
+  --surface-canvas-light: #ffffff;
+  --text-primary-dark: var(--text);
+  --text-well-dark: var(--text);
+  --text-primary-light: #18181b;
+  --text-inverse-dark: #18181b;
+  --text-on-accent: var(--on-accent);
+}

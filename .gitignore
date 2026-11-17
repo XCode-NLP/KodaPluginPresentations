@@ -1,0 +1,9 @@
+/main.js
+/ui/app.js
+/ui/THIRD_PARTY_NOTICES.txt
+/*.kodaplugin
+/ui/tokens.css
+
+node_modules/
+/dist/
+.DS_Store
