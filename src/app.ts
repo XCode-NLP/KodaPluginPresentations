@@ -1,27 +1,88 @@
-import { id, object, selectionFor, slideFor } from "./model.js";
-import { readSource, sendBinary, snapshot } from "./media.js";
-import { themeOf } from "./design/themes.js";
-import { exportPdf, exportPowerPoint, importDeck } from "./office.js";
-import { strings } from "./strings.js";
-import { chartSvg } from "./chart.js";
+import { id, object, selectionFor, slideFor } from "./model";
+import { readSource, sendBinary, snapshot } from "./media";
+import { themeOf } from "./design/themes";
+import { exportPdf, exportPowerPoint, importDeck } from "./office";
+import { strings } from "./strings";
+import { chartSvg } from "./chart";
+import type {} from "@kodadev/desktop-plugin-sdk/ui";
+import type { ObjectKind, PresentationDocument, Selection, Slide, SlideObject } from "./types";
 
-const bridge = window.kodaPlugin;
-const $ = (id) => document.getElementById(id);
-let language = "ru";
-let sessionId;
+/** Elements are looked up by id from ui/index.html; one type covers the inputs, selects and dialogs used. */
+type Control = HTMLElement & HTMLInputElement & HTMLDialogElement;
+interface ViewState {
+  document: PresentationDocument;
+  version: number;
+  selection: Selection;
+  reference: string;
+  canUndo: boolean;
+  canRedo: boolean;
+}
+interface ChangeParams {
+  sessionId: string;
+  documentId: string;
+  expectedVersion: number;
+  operations?: unknown[] | null;
+  direction?: "undo" | "redo" | null;
+}
+interface Drag {
+  base: ViewState;
+  slideId: string;
+  objectId: string;
+  objects: SlideObject[];
+  resize: boolean;
+  startX: number;
+  startY: number;
+  scale: number;
+  operations: unknown[];
+  pointerId?: number;
+}
+interface RenderRequest {
+  sessionId: string;
+  requestId: string;
+  documentId: string;
+  slideIds: string[];
+}
+type Language = keyof typeof strings;
+type StringKey = keyof (typeof strings)["en"];
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const plugin = window.kodaPlugin;
+if (!plugin) throw new Error("Open this plugin inside Koda Desktop.");
+const bridge = plugin;
+const $ = (id: string): Control => {
+  const element = document.getElementById(id);
+  if (!element) throw new Error(`Missing element #${id}`);
+  return element as Control;
+};
+let language: Language = "ru";
+let sessionId: string | null = null;
 let generation = 0;
-let state;
+let state: ViewState | null = null;
 let busy = false;
-let retry;
-let drag;
+let retry: ChangeParams | null = null;
+let drag: Drag | null = null;
 let refreshNeeded = false;
-const assets = new Map();
-const t = (key, detail) => [strings[language][key], detail].filter(Boolean).join(" · ");
-const currentSlide = () => state?.document.slides.find((slide) => slide.id === state.selection.slideId);
-const selected = () => currentSlide()?.objects.filter((obj) => state.selection.objectIds.includes(obj.id)) ?? [];
-const context = () => ({ sessionId, documentId: state.document.id });
+const assets = new Map<string, Promise<string>>();
+const t = (key: string, detail?: string): string =>
+  [strings[language][key as StringKey] ?? key, detail].filter(Boolean).join(" · ");
+/** The open document; handlers that need it run only while the editor is shown. */
+const view = (): ViewState => {
+  if (!state) throw new Error("No active presentation");
+  return state;
+};
+const currentSlide = (): Slide => {
+  const { document: doc, selection } = view();
+  return doc.slides.find((slide) => slide.id === selection.slideId) ?? doc.slides[0];
+};
+const selected = (): SlideObject[] => {
+  if (!state) return [];
+  const ids = state.selection.objectIds;
+  return currentSlide().objects.filter((obj) => ids.includes(obj.id));
+};
+const context = () => ({ sessionId: sessionId ?? "", documentId: view().document.id });
 
-function status(message, error = false) {
+function status(message: string, error = false) {
   $("status").textContent = error ? "" : message;
   $("status").toggleAttribute("data-busy", busy);
   $("status").toggleAttribute("data-error", error);
@@ -35,7 +96,7 @@ function syncFeedback() {
   $("feedback").hidden = !$("feedback-text").textContent && $("retry").hidden && $("reveal").hidden;
 }
 
-function closeMenus(except) {
+function closeMenus(except?: string) {
   for (const [button, menu] of [
     ["file-menu-button", "file-menu"],
     ["export-button", "export-menu"],
@@ -52,13 +113,13 @@ for (const [button, menu] of [
   ["export-button", "export-menu"],
   ["add-slide-button", "layout-menu"],
 ]) {
-  $(button).onclick = (event) => {
+  $(button).onclick = (event: MouseEvent) => {
     event.stopPropagation();
     const open = $(menu).hidden;
     closeMenus(menu);
     $(menu).hidden = !open;
     $(button).setAttribute("aria-expanded", String(open));
-    if (open) $(menu).querySelector("button:enabled")?.focus();
+    if (open) $(menu).querySelector<HTMLButtonElement>("button:enabled")?.focus();
   };
   $(menu).addEventListener("click", () => closeMenus());
 }
@@ -66,22 +127,22 @@ document.addEventListener("click", () => closeMenus());
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeMenus();
 });
-for (const card of document.querySelectorAll("[data-proxy]")) card.onclick = () => $(card.dataset.proxy).click();
-for (const button of document.querySelectorAll("[data-kind]"))
+for (const card of document.querySelectorAll<HTMLElement>("[data-proxy]")) card.onclick = () => $(card.dataset.proxy ?? "").click();
+for (const button of document.querySelectorAll<HTMLElement>("[data-kind]"))
   button.onclick = () => {
-    $("kind").value = button.dataset.kind;
+    $("kind").value = button.dataset.kind ?? "";
     $("add-object").click();
   };
 
 function localize() {
   document.documentElement.lang = language;
   document.title = t("heading");
-  for (const element of document.querySelectorAll("[data-text]")) element.textContent = t(element.dataset.text);
-  for (const element of document.querySelectorAll("[data-label]")) {
-    element.title = t(element.dataset.label);
+  for (const element of document.querySelectorAll<HTMLElement>("[data-text]")) element.textContent = t(element.dataset.text ?? "");
+  for (const element of document.querySelectorAll<HTMLElement>("[data-label]")) {
+    element.title = t(element.dataset.label ?? "");
     element.setAttribute("aria-label", element.title);
   }
-  const options = (element, keys, suffix = "") => {
+  const options = (element: Control, keys: string[], suffix = "") => {
     const previous = element.value;
     element.replaceChildren(...keys.map((key) => new Option(t(key + suffix), key)));
     if (keys.includes(previous)) element.value = previous;
@@ -105,14 +166,14 @@ function localize() {
 
 async function refresh() {
   const epoch = generation;
-  const next = sessionId ? await bridge.call("state", { sessionId }) : null;
+  const next = sessionId ? ((await bridge.call("state", { sessionId })) as ViewState | null) : null;
   if (epoch === generation) {
     state = next;
     render();
   }
 }
 
-async function action(fn) {
+async function action(fn: (active: string) => Promise<unknown>): Promise<void> {
   if (busy) return;
   const epoch = generation;
   const active = sessionId;
@@ -126,11 +187,12 @@ async function action(fn) {
     if (epoch === generation) status(typeof result === "string" ? result : state ? t("saved") : "");
   } catch (error) {
     if (epoch === generation) {
-      if (retry && /Version conflict|active presentation changed/i.test(error.message)) {
+      const message = errorText(error);
+      if (retry && /Version conflict|active presentation changed/i.test(message)) {
         retry = null;
         refreshNeeded = true;
       }
-      status(retry ? `${t("unsaved")} · ${error.message}` : error.message, true);
+      status(retry ? `${t("unsaved")} · ${message}` : message, true);
     }
   } finally {
     busy = false;
@@ -138,23 +200,23 @@ async function action(fn) {
     $("status").removeAttribute("data-busy");
     if (refreshNeeded && !drag && !sheet.querySelector('[contenteditable="plaintext-only"]')) {
       refreshNeeded = false;
-      refresh().catch((error) => status(error.message, true));
+      refresh().catch((error) => status(errorText(error), true));
     }
   }
 }
 
-async function accept(method, params) {
+async function accept(method: string, params: unknown) {
   const epoch = generation;
-  const next = await bridge.call(method, params);
+  const next = (await bridge.call(method, params)) as ViewState;
   if (epoch === generation) {
     state = next;
     render();
   }
 }
 
-function commit(operations, direction, base = state) {
-  if (!base || (!operations?.length && !direction)) return;
-  const params = { sessionId, documentId: base.document.id, expectedVersion: base.version, operations, direction };
+function commit(operations: unknown[] | null, direction?: "undo" | "redo" | null, base: ViewState | null = state) {
+  if (!base || !sessionId || (!operations?.length && !direction)) return;
+  const params: ChangeParams = { sessionId, documentId: base.document.id, expectedVersion: base.version, operations, direction };
   return action(async () => {
     retry = params;
     await accept("change", params);
@@ -162,7 +224,7 @@ function commit(operations, direction, base = state) {
   });
 }
 
-async function select(slideId, objectIds) {
+async function select(slideId: string, objectIds: string[]) {
   if (!state) return;
   const selection = selectionFor(state.document, { slideId, objectIds });
   if (busy) return;
@@ -174,33 +236,40 @@ async function select(slideId, objectIds) {
   try {
     await bridge.call("select", request);
   } catch (error) {
-    if (sessionId === request.sessionId) status(error.message, true);
+    if (sessionId === request.sessionId) status(errorText(error), true);
   }
 }
 
-function imageFor(resource, request = context()) {
+function imageFor(resource: string, request: { sessionId: string; documentId: string } = context()): Promise<string> {
   const key = `${request.sessionId}/${request.documentId}/${resource}`;
   if (!assets.has(key)) {
     const promise = bridge
       .call("readAsset", { ...request, resource })
-      .then(({ data }) => `data:image/png;base64,${data}`)
+      .then((answer) => `data:image/png;base64,${(answer as { data: string }).data}`)
       .catch((error) => {
         assets.delete(key);
         throw error;
       });
     assets.set(key, promise);
-    if (assets.size > 24) assets.delete(assets.keys().next().value);
+    const oldest = assets.keys().next().value;
+    if (assets.size > 24 && oldest !== undefined) assets.delete(oldest);
   }
-  return assets.get(key);
+  return assets.get(key)!;
 }
 
-function slideElement(doc, slide, editable = false, request = context()) {
+function slideElement(
+  doc: PresentationDocument,
+  slide: Slide,
+  editable = false,
+  request: { sessionId: string; documentId: string } = context(),
+): HTMLElement {
+  const theme = themeOf(doc);
   const element = document.createElement("div");
   element.className = editable ? "slide editable" : "slide";
   Object.assign(element.style, {
     width: `${doc.width}px`,
     height: `${doc.height}px`,
-    background: slide.background ?? doc.theme.background,
+    background: slide.background ?? theme.background,
   });
   for (const obj of slide.objects) {
     const node = document.createElement("div");
@@ -239,7 +308,7 @@ function slideElement(doc, slide, editable = false, request = context()) {
         .catch(() => {});
     } else if (obj.kind === "chart") {
       // chartSvg escapes every label, so the markup carries no user-controlled tags.
-      node.innerHTML = chartSvg(obj, doc.theme);
+      node.innerHTML = chartSvg(obj, theme);
     } else if (obj.kind === "line") {
       const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
       svg.setAttribute("width", "100%");
@@ -256,7 +325,7 @@ function slideElement(doc, slide, editable = false, request = context()) {
     }
     if (editable) {
       node.tabIndex = 0;
-      node.setAttribute("aria-label", obj.text?.slice(0, 80) || t(obj.kind));
+      node.setAttribute("aria-label", (obj.kind === "text" && obj.text.slice(0, 80)) || t(obj.kind));
     }
     element.append(node);
   }
@@ -273,7 +342,7 @@ function sizeSheet() {
   const scale = Math.max(0.05, Math.min(availableWidth / width, availableHeight / height, 1));
   $("sheet").style.width = `${width * scale}px`;
   $("sheet").style.height = `${height * scale}px`;
-  $("sheet").firstChild.style.transform = `scale(${scale})`;
+  ($("sheet").firstChild as HTMLElement).style.transform = `scale(${scale})`;
 }
 
 function render() {
@@ -285,7 +354,7 @@ function render() {
   for (const name of ["undo", "redo", "export-anchor"]) $(name).hidden = !doc;
   for (const name of ["create", "open", "import"]) $(name).disabled = !sessionId;
   $("empty-actions").hidden = !sessionId;
-  if (!doc) return;
+  if (!state || !doc) return;
   if (document.activeElement !== $("title")) $("title").value = doc.title;
   $("undo").disabled = !state.canUndo;
   $("redo").disabled = !state.canRedo;
@@ -329,7 +398,7 @@ function render() {
   $("warnings").hidden = !report.length;
   $("warnings")
     .querySelector("ul")
-    .replaceChildren(
+    ?.replaceChildren(
       ...report.map((note) => {
         const li = document.createElement("li");
         li.textContent = note;
@@ -339,10 +408,12 @@ function render() {
 }
 
 function renderSelection() {
+  if (!state) return;
+  const { selection: current } = state;
   const slide = currentSlide();
   const index = state.document.slides.indexOf(slide);
-  for (const node of $("sheet").querySelectorAll("[data-object]")) {
-    const active = state.selection.objectIds.includes(node.dataset.object);
+  for (const node of $("sheet").querySelectorAll<HTMLElement>("[data-object]")) {
+    const active = current.objectIds.includes(node.dataset.object ?? "");
     node.toggleAttribute("data-selected", active);
     if (active && !node.querySelector(".handle")) {
       const handle = document.createElement("span");
@@ -357,7 +428,7 @@ function renderSelection() {
   $("selection").textContent = [
     `${t("slide")} ${index + 1}`,
     selection.length === 1
-      ? selection[0].text?.slice(0, 45) || t(selection[0].kind)
+      ? (selection[0].kind === "text" && selection[0].text.slice(0, 45)) || t(selection[0].kind)
       : selection.length
         ? `${selection.length} ${t("selected")}`
         : "",
@@ -366,12 +437,14 @@ function renderSelection() {
     .join(" · ");
   const first = selection[0];
   if (first) {
+    const fields = first as unknown as Record<string, unknown>;
     for (const name of ["font", "size", "color", "align", "bold", "italic", "fill", "stroke"]) {
       const input = $(name);
-      (input.closest(".color-row") ?? input.closest("label")).hidden = !selection.every((obj) => name in obj);
-      if (input.type === "checkbox") input.checked = !!first[name];
-      else if (input.type === "number") input.value = String(Math.round(first[name] * 10) / 10);
-      else if (name in first) input.value = first[name] === "transparent" ? "#000000" : first[name];
+      const row = input.closest<HTMLElement>(".color-row") ?? input.closest<HTMLElement>("label");
+      if (row) row.hidden = !selection.every((obj) => name in obj);
+      if (input.type === "checkbox") input.checked = !!fields[name];
+      else if (input.type === "number") input.value = String(Math.round(Number(fields[name]) * 10) / 10);
+      else if (name in first) input.value = fields[name] === "transparent" ? "#000000" : String(fields[name]);
     }
     $("no-fill").checked = first.fill === "transparent";
     $("no-stroke").checked = first.stroke === "transparent";
@@ -382,12 +455,14 @@ function renderSelection() {
   for (const [group, key] of [
     ['[data-group="text"]', "font"],
     [".section:has(#fill)", "fill"],
-  ])
-    document.querySelector(group).hidden = !selection.length || !selection.every((obj) => key in obj);
+  ]) {
+    const element = document.querySelector<HTMLElement>(group);
+    if (element) element.hidden = !selection.length || !selection.every((obj) => key in obj);
+  }
   requestAnimationFrame(sizeSheet);
 }
 
-const update = (patch) =>
+const update = (patch: Record<string, unknown>) =>
   commit(selected().map((obj) => ({ type: "updateObject", slideId: currentSlide().id, objectId: obj.id, patch })));
 
 $("create").onclick = () =>
@@ -397,7 +472,7 @@ $("create").onclick = () =>
   });
 $("open").onclick = () =>
   action(async (active) => {
-    const documents = await bridge.call("list", { sessionId: active });
+    const documents = (await bridge.call("list", { sessionId: active })) as { id: string; title: string }[];
     if (active !== sessionId) return;
     if (!documents.length) return t("noDocs");
     $("documents").replaceChildren(...documents.map((doc) => new Option(doc.title, doc.id)));
@@ -405,10 +480,10 @@ $("open").onclick = () =>
   });
 $("open-dialog")
   .querySelector("form")
-  .addEventListener("submit", (event) => {
+  ?.addEventListener("submit", (event) => {
     event.preventDefault();
     $("open-dialog").close();
-    if (event.submitter?.value === "ok")
+    if ((event.submitter as HTMLButtonElement | null)?.value === "ok")
       void action(async (active) => {
         await accept("open", { sessionId: active, documentId: $("documents").value });
         retry = null;
@@ -419,10 +494,10 @@ $("import").onclick = () => {
 };
 $("import-dialog")
   .querySelector("form")
-  .addEventListener("submit", (event) => {
+  ?.addEventListener("submit", (event) => {
     event.preventDefault();
     $("import-dialog").close();
-    if (event.submitter?.value !== "ok") return;
+    if ((event.submitter as HTMLButtonElement | null)?.value !== "ok") return;
     void action(async (active) => {
       const epoch = generation;
       const source = $("source").value;
@@ -431,13 +506,13 @@ $("import-dialog")
         bytes,
         source
           .split("/")
-          .at(-1)
+          .at(-1)!
           .replace(/\.pptx$/i, "")
           .slice(0, 200),
         $("stage"),
-        (documentId, resource, blob) => {
+        async (documentId, resource, blob) => {
           if (epoch !== generation) throw new Error(t("chat"));
-          return sendBinary(bridge, { sessionId: active, documentId, resource }, blob);
+          await sendBinary(bridge, { sessionId: active, documentId, resource }, blob);
         },
         t,
       );
@@ -457,7 +532,7 @@ $("retry").onclick = () =>
 $("discuss").onclick = () => action(() => bridge.call("discuss", context()));
 $("reveal").onclick = () => action((active) => bridge.call("reveal", { sessionId: active }));
 $("add-slide").onclick = () => {
-  const { width, height } = state.document;
+  const { width, height } = view().document;
   return commit([
     {
       type: "addSlide",
@@ -466,39 +541,39 @@ $("add-slide").onclick = () => {
         subtitle: t("subtitle"),
         text: t("text"),
         caption: t("caption"),
-      }, themeOf(state.document)),
+      }, themeOf(view().document)),
     },
   ]);
 };
 $("duplicate").onclick = () => {
   const slide = currentSlide();
   const duplicate = { ...slide, id: id(), objects: slide.objects.map((obj) => ({ ...obj, id: id() })) };
-  return commit([{ type: "addSlide", slide: duplicate, index: state.document.slides.indexOf(slide) + 1 }]);
+  return commit([{ type: "addSlide", slide: duplicate, index: view().document.slides.indexOf(slide) + 1 }]);
 };
 $("delete-slide").onclick = () => commit([{ type: "deleteSlide", slideId: currentSlide().id }]);
 for (const [name, offset] of [
   ["back", -1],
   ["forward", 1],
-]) {
+] as const) {
   $(name).onclick = () =>
     commit([
-      { type: "moveSlide", slideId: currentSlide().id, index: state.document.slides.indexOf(currentSlide()) + offset },
+      { type: "moveSlide", slideId: currentSlide().id, index: view().document.slides.indexOf(currentSlide()) + offset },
     ]);
 }
 $("add-object").onclick = () => {
-  const kind = $("kind").value;
+  const kind = $("kind").value as ObjectKind;
   if (kind === "image") return $("image-file").click();
   return commit([
     { type: "addObject", slideId: currentSlide().id, object: object(kind, kind === "text" ? { text: t("text") } : {}) },
   ]);
 };
 $("image-file").onchange = () => {
-  const file = $("image-file").files[0];
+  const file = $("image-file").files?.[0];
   $("image-file").value = "";
   if (!file) return;
   void action(async () => {
     const request = context();
-    const base = state;
+    const base = view();
     const slideId = currentSlide().id;
     if (!/^image\/(png|jpeg|webp)$/.test(file.type) || file.size > 8_000_000)
       throw new Error("Unsupported or oversized image");
@@ -508,12 +583,12 @@ $("image-file").onchange = () => {
       const factor = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height));
       canvas.width = Math.max(1, Math.round(bitmap.width * factor));
       canvas.height = Math.max(1, Math.round(bitmap.height * factor));
-      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     } finally {
       bitmap.close();
     }
     const resource = id();
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve));
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve));
     if (!blob) throw new Error("Could not encode image");
     await sendBinary(bridge, { ...request, resource }, blob);
     const w = Math.min(260, canvas.width);
@@ -546,12 +621,12 @@ for (const name of ["font", "size", "color", "align", "bold", "italic", "fill", 
   };
 }
 for (const name of ["fill", "stroke"]) {
-  $(`no-${name}`).onchange = (event) => update({ [name]: event.target.checked ? "transparent" : $(name).value });
+  $(`no-${name}`).onchange = (event: Event) => update({ [name]: (event.target as HTMLInputElement).checked ? "transparent" : $(name).value });
 }
 for (const [name, offset] of [
   ["lower", -1],
   ["raise", 1],
-]) {
+] as const) {
   $(name).onclick = () => {
     const slide = currentSlide();
     const obj = selected()[0];
@@ -562,19 +637,20 @@ for (const [name, offset] of [
 }
 
 const sheet = $("sheet");
+const targetOf = (event: Event) => event.target as HTMLElement;
 sheet.addEventListener("pointerdown", (event) => {
-  if (busy || event.button !== 0 || event.target.closest("[contenteditable]")?.isContentEditable) return;
-  const editing = sheet.querySelector('[contenteditable="plaintext-only"]');
+  if (busy || !state || event.button !== 0 || targetOf(event).closest<HTMLElement>("[contenteditable]")?.isContentEditable) return;
+  const editing = sheet.querySelector<HTMLElement>('[contenteditable="plaintext-only"]');
   if (editing) {
     editing.blur();
     return;
   }
-  const node = event.target.closest("[data-object]");
+  const node = targetOf(event).closest<HTMLElement>("[data-object]");
   if (!node) {
     void select(currentSlide().id, []);
     return;
   }
-  const objectId = node.dataset.object;
+  const objectId = node.dataset.object ?? "";
   const slide = currentSlide();
   const oldIds = state.selection.objectIds;
   const additive = event.shiftKey || event.metaKey || event.ctrlKey;
@@ -587,7 +663,7 @@ sheet.addEventListener("pointerdown", (event) => {
       : [objectId];
   if (ids !== oldIds) void select(slide.id, ids);
   if (additive) return;
-  const resize = event.target.classList.contains("handle");
+  const resize = targetOf(event).classList.contains("handle");
   drag = {
     base: state,
     slideId: slide.id,
@@ -603,20 +679,21 @@ sheet.addEventListener("pointerdown", (event) => {
 });
 window.addEventListener("pointermove", (event) => {
   if (!drag || drag.pointerId !== event.pointerId) return;
+  const current = drag;
   const dx = (event.clientX - drag.startX) / drag.scale;
   const dy = (event.clientY - drag.startY) / drag.scale;
   if (Math.abs(dx) + Math.abs(dy) < 2 && !drag.operations.length) return;
   if (!sheet.hasPointerCapture(event.pointerId)) sheet.setPointerCapture(event.pointerId);
-  drag.operations = drag.objects
-    .filter((obj) => !drag.resize || obj.id === drag.objectId)
+  current.operations = current.objects
+    .filter((obj) => !current.resize || obj.id === current.objectId)
     .map((obj) => {
-      const patch = drag.resize
+      const patch: Record<string, number> = current.resize
         ? { w: Math.max(1, Math.min(8000, obj.w + dx)), h: Math.max(1, Math.min(8000, obj.h + dy)) }
         : { x: Math.max(-8000, Math.min(8000, obj.x + dx)), y: Math.max(-8000, Math.min(8000, obj.y + dy)) };
-      const node = sheet.querySelector(`[data-object="${obj.id}"]`);
-      for (const [key, value] of Object.entries(patch))
-        node.style[{ x: "left", y: "top", w: "width", h: "height" }[key]] = `${value}px`;
-      return { type: "updateObject", slideId: drag.slideId, objectId: obj.id, patch };
+      const node = sheet.querySelector<HTMLElement>(`[data-object="${obj.id}"]`);
+      const styles: Record<string, "left" | "top" | "width" | "height"> = { x: "left", y: "top", w: "width", h: "height" };
+      for (const [key, value] of Object.entries(patch)) if (node) node.style[styles[key]] = `${value}px`;
+      return { type: "updateObject", slideId: current.slideId, objectId: obj.id, patch };
     });
 });
 window.addEventListener("pointerup", (event) => {
@@ -627,7 +704,7 @@ window.addEventListener("pointerup", (event) => {
   if (completed.operations.length) void commit(completed.operations, null, completed.base);
   else if (refreshNeeded) {
     refreshNeeded = false;
-    refresh().catch((error) => status(error.message, true));
+    refresh().catch((error) => status(errorText(error), true));
   }
 });
 window.addEventListener("pointercancel", (event) => {
@@ -636,17 +713,17 @@ window.addEventListener("pointercancel", (event) => {
     render();
   }
 });
-function editText(node) {
-  if (busy || !node || node.firstChild?.isContentEditable) return;
+function editText(node: HTMLElement | null) {
+  if (busy || !state || !node || (node.firstChild as HTMLElement | null)?.isContentEditable) return;
   const slide = currentSlide();
-  const obj = slide.objects.find((obj) => obj.id === node.dataset.object);
+  const obj = slide.objects.find((item) => item.id === node.dataset.object);
   if (obj?.kind !== "text") return;
   const base = state;
-  const editor = node.firstChild;
+  const editor = node.firstChild as HTMLElement;
   editor.contentEditable = "plaintext-only";
   editor.setAttribute("aria-label", t("editText"));
   const listeners = new AbortController();
-  const finish = (save) => {
+  const finish = (save: boolean) => {
     const value = editor.innerText;
     listeners.abort();
     editor.contentEditable = "false";
@@ -656,7 +733,7 @@ function editText(node) {
       void commit([{ type: "updateObject", slideId: slide.id, objectId: obj.id, patch: { text: value } }], null, base);
     } else if (refreshNeeded) {
       refreshNeeded = false;
-      refresh().catch((error) => status(error.message, true));
+      refresh().catch((error) => status(errorText(error), true));
     }
   };
   editor.addEventListener("blur", () => finish(true), { signal: listeners.signal });
@@ -673,23 +750,23 @@ function editText(node) {
   );
   editor.focus();
 }
-sheet.addEventListener("dblclick", (event) => editText(event.target.closest("[data-object]")));
+sheet.addEventListener("dblclick", (event) => editText(targetOf(event).closest<HTMLElement>("[data-object]")));
 sheet.addEventListener("keydown", (event) => {
-  const node = event.target.closest("[data-object]");
-  if (!node || event.target.isContentEditable) return;
+  const node = targetOf(event).closest<HTMLElement>("[data-object]");
+  if (!node || targetOf(event).isContentEditable) return;
   if (event.key === " " || event.key === "Enter") {
     event.preventDefault();
-    void select(currentSlide().id, [node.dataset.object]);
+    void select(currentSlide().id, [node.dataset.object ?? ""]);
     if (event.key === "Enter") editText(node);
   }
 });
-$("edit-text").onclick = () => editText(sheet.querySelector("[data-selected]"));
+$("edit-text").onclick = () => editText(sheet.querySelector<HTMLElement>("[data-selected]"));
 
 for (const format of ["pptx", "pdf"]) {
   $(format).onclick = () =>
     action(async () => {
       const request = context();
-      const doc = state.document;
+      const doc = view().document;
       const file = `presentation.${format}`;
       const blob =
         format === "pptx"
@@ -699,7 +776,7 @@ for (const format of ["pptx", "pdf"]) {
               async (slide) => {
                 const element = slideElement(doc, slide, false, request);
                 for (const img of element.querySelectorAll("img"))
-                  img.src = await imageFor(img.dataset.resource, request);
+                  img.src = await imageFor(img.dataset.resource ?? "", request);
                 return element;
               },
               $("stage"),
@@ -714,13 +791,14 @@ for (const format of ["pptx", "pdf"]) {
 }
 
 // The agent's render_slides tool: draw the requested slides and save PNG previews into the project.
-async function renderForAgent({ sessionId: requested, requestId, documentId, slideIds }) {
+async function renderForAgent({ sessionId: requested, requestId, documentId, slideIds }: RenderRequest) {
   await bridge.call("renderAck", { sessionId: requested, requestId });
   try {
-    const { document: doc } = await bridge.call("state", { sessionId: requested });
-    if (doc?.id !== documentId) throw new Error("The active presentation changed");
+    const current = (await bridge.call("state", { sessionId: requested })) as ViewState | null;
+    const doc = current?.document;
+    if (!doc || doc.id !== documentId) throw new Error("The active presentation changed");
     const request = { sessionId: requested, documentId };
-    const files = [];
+    const files: { slideId: string; slide: number; path: string }[] = [];
     const scale = Math.min(1.5, 1440 / doc.width);
     for (const slideId of slideIds) {
       const slide = doc.slides.find(({ id: key }) => key === slideId);
@@ -730,12 +808,12 @@ async function renderForAgent({ sessionId: requested, requestId, documentId, sli
       try {
         await Promise.all(
           [...element.querySelectorAll("img")].map(async (img) => {
-            if (!img.src) await imageFor(img.dataset.resource, request).then((url) => (img.src = url));
+            if (!img.src) img.src = await imageFor(img.dataset.resource ?? "", request);
             await img.decode();
           }),
         );
         const canvas = await snapshot(element, doc.width, doc.height, false, scale);
-        const blob = await new Promise((resolve, reject) =>
+        const blob = await new Promise<Blob>((resolve, reject) =>
           canvas.toBlob((value) => (value ? resolve(value) : reject(new Error("PNG encoding failed")))),
         );
         await sendBinary(bridge, { ...request, preview: slideId }, blob);
@@ -746,42 +824,45 @@ async function renderForAgent({ sessionId: requested, requestId, documentId, sli
     }
     await bridge.call("rendered", { sessionId: requested, requestId, files });
   } catch (error) {
-    await bridge.call("rendered", { sessionId: requested, requestId, error: error.message }).catch(() => {});
+    await bridge.call("rendered", { sessionId: requested, requestId, error: errorText(error) }).catch(() => {});
   }
 }
 
 new ResizeObserver(sizeSheet).observe($("workspace"));
-bridge.subscribe((event, value) => {
-  if (event === "render" && value.sessionId === sessionId) void renderForAgent(value);
-  if (event === "theme") document.documentElement.dataset.theme = value;
+bridge.subscribe((event, data) => {
+  const value = data as Record<string, unknown>;
+  if (event === "render" && value.sessionId === sessionId) void renderForAgent(data as RenderRequest);
+  if (event === "theme") document.documentElement.dataset.theme = String(data);
   if (event === "language") {
-    language = value;
+    language = data === "en" ? "en" : "ru";
     localize();
     render();
   }
   if (event === "session") {
     generation++;
-    sessionId = value;
-    state = retry = drag = null;
+    sessionId = typeof data === "string" ? data : null;
+    state = null;
+    retry = null;
+    drag = null;
     assets.clear();
     $("reveal").hidden = true;
     closeMenus();
-    for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close("cancel");
+    for (const dialog of document.querySelectorAll("dialog[open]")) (dialog as HTMLDialogElement).close("cancel");
     status("");
     render();
-    refresh().catch((error) => status(error.message, true));
+    refresh().catch((error) => status(errorText(error), true));
   }
   if (event === "binding" && value.sessionId === sessionId) {
     if (busy || drag || sheet.querySelector('[contenteditable="plaintext-only"]')) refreshNeeded = true;
-    else refresh().catch((error) => status(error.message, true));
+    else refresh().catch((error) => status(errorText(error), true));
   }
   if (
     event === "document" &&
     sessionId &&
-    (!state || (value.documentId === state.document.id && value.version > state.version))
+    (!state || (value.documentId === state.document.id && Number(value.version) > state.version))
   ) {
     if (busy || drag || sheet.querySelector('[contenteditable="plaintext-only"]')) refreshNeeded = true;
-    else refresh().catch((error) => status(error.message, true));
+    else refresh().catch((error) => status(errorText(error), true));
   }
 });
 const info = await bridge.info();
@@ -790,4 +871,4 @@ sessionId = info.sessionId;
 document.documentElement.dataset.theme = info.theme;
 localize();
 render();
-await refresh().catch((error) => status(error.message, true));
+await refresh().catch((error) => status(errorText(error), true));

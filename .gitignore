@@ -1,8 +1,5 @@
-/main.js
-/ui/app.js
-/ui/THIRD_PARTY_NOTICES.txt
-/*.kodaplugin
-/ui/tokens.css
+bundle/
+*.kodaplugin
 
 node_modules/
 /dist/

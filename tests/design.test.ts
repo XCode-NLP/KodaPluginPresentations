@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { apply, create, validate } from "./model.js";
-import { buildLayoutSlide, LAYOUT_IDS, layoutCatalog } from "./design/layouts.js";
-import { lintDeck } from "./design/lint.js";
-import { THEMES, contrast, resolvedTheme, themeOf } from "./design/themes.js";
-import { fitText } from "./design/text.js";
+import { fields, initial, objectAt } from "./helpers";
+import { apply, validate } from "../src/model";
+import { buildLayoutSlide, LAYOUT_IDS, layoutCatalog } from "../src/design/layouts";
+import { lintDeck } from "../src/design/lint";
+import { THEMES, contrast, resolvedTheme, themeOf } from "../src/design/themes";
+import { fitText } from "../src/design/text";
 
-const labels = { title: "Заголовок", subtitle: "Подзаголовок" };
-const initial = () => ({ version: 1, document: create("Проект", labels), undo: [], redo: [] });
 
-const SAMPLE = {
+const SAMPLE: Record<string, Record<string, unknown>> = {
   title: { kicker: "Q3", title: "Онбординг v2 снизил отток", subtitle: "Итоги квартала и план", footer: "Команда роста · ноябрь" },
   section: { number: "02", title: "Что изменилось", subtitle: "Три решения" },
   statement: { statement: "Пользователи уходят в первые три дня", support: "Почти весь отток приходится на неделю после регистрации" },
@@ -49,9 +48,9 @@ test("list slots keep the whole text of every point", () => {
   const doc = initial().document;
   const theme = resolvedTheme("clean");
   const bullets = buildLayoutSlide(doc, theme, "bullets", SAMPLE.bullets);
-  assert.ok(bullets.objects.some((obj) => obj.text?.includes("Письма по поведению")));
+  assert.ok(bullets.objects.some((obj) => fields(obj).text?.includes("Письма по поведению")));
   const table = buildLayoutSlide(doc, theme, "table", SAMPLE.table);
-  assert.ok(table.objects.some((obj) => obj.text === "Лимит"));
+  assert.ok(table.objects.some((obj) => fields(obj).text === "Лимит"));
 });
 
 test("catalog exposes slots for the agent", () => {
@@ -75,17 +74,17 @@ test("role names resolve, persist and follow a theme switch", () => {
   const next = apply(state, 1, [
     { type: "addObject", slideId, object: { kind: "text", text: "Акцент", x: 64, y: 400, w: 400, h: 60, color: "accent", size: "h3" } },
   ]);
-  const added = next.document.slides[0].objects.at(-1);
+  const added = objectAt(next, -1);
   assert.equal(added.color, resolvedTheme("clean").colors.accent);
   assert.deepEqual(added.roles, { font: "body", size: "h3", color: "accent" });
   const dark = apply(next, 2, [{ type: "setTheme", theme: "midnight" }]);
-  const repainted = dark.document.slides[0].objects.at(-1);
+  const repainted = objectAt(dark, -1);
   assert.equal(repainted.color, resolvedTheme("midnight").colors.accent);
   assert.equal(repainted.font, "Arial");
-  assert.equal(dark.document.slides[0].objects[0].font, "Verdana");
+  assert.equal(objectAt(dark, 0).font, "Verdana");
   assert.equal(themeOf(dark.document).id, "midnight");
   const literal = apply(dark, 3, [{ type: "updateObject", slideId, objectId: added.id, patch: { color: "#123456" } }]);
-  assert.equal(literal.document.slides[0].objects.at(-1).roles.color, undefined);
+  assert.equal(objectAt(literal, -1).roles?.color, undefined);
 });
 
 test("legacy documents without tokens get roles inferred on switch", () => {
@@ -94,11 +93,11 @@ test("legacy documents without tokens get roles inferred on switch", () => {
   doc.theme = { background: "#ffffff" };
   for (const obj of doc.slides[0].objects) {
     delete obj.roles;
-    obj.color = "#1c1f2e";
+    fields(obj).color = "#1c1f2e";
   }
   validate(doc);
   const next = apply(state, 1, [{ type: "setTheme", theme: "midnight" }]);
-  assert.equal(next.document.slides[0].objects[0].color, resolvedTheme("midnight").colors.text);
+  assert.equal(objectAt(next, 0).color, resolvedTheme("midnight").colors.text);
 });
 
 test("lint reports overflow, contrast and placeholders", () => {

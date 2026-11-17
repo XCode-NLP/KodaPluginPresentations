@@ -2,22 +2,27 @@
 // render time, so a theme switch repaints it. The panel draws it as SVG, PowerPoint gets a real,
 // editable chart.
 
-export const CHART_TYPES = ["column", "bar", "line", "area", "pie", "doughnut"];
-export const CHART_FIELDS = ["chartType", "categories", "series", "stacked", "showLegend", "showValues", "unit", "highlight"];
+import type PptxGenJS from "pptxgenjs";
+import type { ChartObject, ChartType, Loose, Theme } from "./types";
+
+export const CHART_TYPES: readonly ChartType[] = ["column", "bar", "line", "area", "pie", "doughnut"];
+export const CHART_FIELDS: readonly string[] = ["chartType", "categories", "series", "stacked", "showLegend", "showValues", "unit", "highlight"];
 
 const MAX_CATEGORIES = 24;
 const MAX_SERIES = 6;
 const FALLBACK = ["#3d5afe", "#00796f", "#f5a524", "#e5484d", "#8e4ec6", "#5d6276"];
 
-const finite = (value) => typeof value === "number" && Number.isFinite(value) && Math.abs(value) < 1e12;
-const label = (value, max) => typeof value === "string" && value.length <= max;
-const round = (value) => Number(value.toFixed(2));
-export const isRadial = (type) => type === "pie" || type === "doughnut";
+const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && Math.abs(value) < 1e12;
+const label = (value: unknown, max: number): value is string => typeof value === "string" && value.length <= max;
+const round = (value: number): number => Number(value.toFixed(2));
+export const isChartType = (value: unknown): value is ChartType => (CHART_TYPES as readonly unknown[]).includes(value);
+export const isRadial = (type: unknown): boolean => type === "pie" || type === "doughnut";
 
-export function validChart(obj) {
+export function validChart(obj: Loose): boolean {
   const n = Array.isArray(obj.categories) ? obj.categories.length : 0;
   return (
-    CHART_TYPES.includes(obj.chartType) &&
+    isChartType(obj.chartType) &&
+    Array.isArray(obj.categories) &&
     n >= 1 &&
     n <= MAX_CATEGORIES &&
     obj.categories.every((item) => label(item, 60)) &&
@@ -25,21 +30,21 @@ export function validChart(obj) {
     obj.series.length >= 1 &&
     obj.series.length <= MAX_SERIES &&
     obj.series.every(
-      (s) => s && label(s.name, 60) && Array.isArray(s.values) && s.values.length === n && s.values.every(finite),
+      (s: Loose | null) => !!s && label(s.name, 60) && Array.isArray(s.values) && s.values.length === n && s.values.every(finite),
     ) &&
-    (!isRadial(obj.chartType) || obj.series[0].values.every((v) => v >= 0)) &&
+    (!isRadial(obj.chartType) || (obj.series[0] as { values: number[] }).values.every((v) => v >= 0)) &&
     typeof obj.stacked === "boolean" &&
     typeof obj.showLegend === "boolean" &&
     typeof obj.showValues === "boolean" &&
     label(obj.unit, 12) &&
-    (obj.highlight === null || (Number.isInteger(obj.highlight) && obj.highlight >= 0 && obj.highlight < n))
+    (obj.highlight === null || (typeof obj.highlight === "number" && Number.isInteger(obj.highlight) && obj.highlight >= 0 && obj.highlight < n))
   );
 }
 
 /** Defaults for a new chart: one series reads without a legend, several need one. */
-export function chartDefaults(input) {
+export function chartDefaults(input: Loose) {
   const series = Array.isArray(input.series) ? input.series : [];
-  const type = input.chartType ?? "column";
+  const type = isChartType(input.chartType) ? input.chartType : "column";
   return {
     chartType: type,
     stacked: false,
@@ -51,7 +56,9 @@ export function chartDefaults(input) {
   };
 }
 
-export function chartPalette(theme) {
+export type ChartPalette = ReturnType<typeof chartPalette>;
+
+export function chartPalette(theme: Theme | null | undefined) {
   const c = theme?.colors;
   return {
     series: c ? [c.chart1, c.chart2, c.chart3, c.chart4, c.chart5, c.muted] : FALLBACK,
@@ -65,18 +72,18 @@ export function chartPalette(theme) {
 }
 
 /** Per-category colors for a single highlighted series, else null. */
-function pointColors(obj, palette) {
+function pointColors(obj: ChartObject, palette: ChartPalette): string[] | null {
   if (obj.series.length !== 1 || obj.highlight === null || !["column", "bar"].includes(obj.chartType)) return null;
   return obj.categories.map((_, i) => (i === obj.highlight ? palette.accent : palette.line));
 }
 
-function niceStep(span) {
+function niceStep(span: number): number {
   const raw = span / 5;
   const power = 10 ** Math.floor(Math.log10(raw || 1));
   return [1, 2, 2.5, 5, 10].map((m) => m * power).find((step) => step >= raw) ?? power * 10;
 }
 
-function scale(obj) {
+function scale(obj: ChartObject) {
   const { series, categories, stacked } = obj;
   let min = 0;
   let max = 0;
@@ -96,28 +103,36 @@ function scale(obj) {
   const step = niceStep(max - min);
   const lo = Math.floor(min / step) * step;
   const hi = Math.ceil(max / step) * step;
-  const ticks = [];
+  const ticks: number[] = [];
   for (let v = lo; v <= hi + step / 2; v += step) ticks.push(round(v));
   return { lo, hi, ticks };
 }
 
-const escape = (value) =>
-  String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
-const format = (value, unit) => `${round(value).toLocaleString("ru-RU")}${unit}`;
+const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const escape = (value: unknown): string => String(value).replace(/[&<>"']/g, (ch) => ESCAPES[ch]);
+const format = (value: number, unit: string): string => `${round(value).toLocaleString("ru-RU")}${unit}`;
 
 /** SVG markup for a chart object, sized to its box. Text is escaped; no external references. */
-export function chartSvg(obj, theme) {
+interface SvgText {
+  anchor?: string;
+  color?: string;
+  weight?: string;
+  size?: number;
+  baseline?: string;
+}
+
+export function chartSvg(obj: ChartObject, theme: Theme | null | undefined): string {
   const p = chartPalette(theme);
   const { w, h } = obj;
   const fs = Math.max(10, Math.min(18, Math.min(w, h) / 22));
-  const out = [];
-  const text = (x, y, value, { anchor = "middle", color = p.muted, weight = "normal", size = fs, baseline = "middle" } = {}) =>
+  const out: string[] = [];
+  const text = (x: number, y: number, value: string, { anchor = "middle", color = p.muted, weight = "normal", size = fs, baseline = "middle" }: SvgText = {}) =>
     out.push(
       `<text x="${round(x)}" y="${round(y)}" text-anchor="${anchor}" dominant-baseline="${baseline}" fill="${color}" font-size="${round(size)}" font-weight="${weight}">${escape(value)}</text>`,
     );
   const radial = isRadial(obj.chartType);
   const legendItems = radial ? obj.categories : obj.series.map((s) => s.name);
-  const colorOf = (i) => p.series[i % p.series.length];
+  const colorOf = (i: number) => p.series[i % p.series.length];
   let top = 4;
   if (obj.showLegend) {
     const gap = fs * 1.2;
@@ -148,7 +163,7 @@ export function chartSvg(obj, theme) {
       const sweep = (value / total) * Math.PI * 2;
       const end = angle + Math.min(sweep, Math.PI * 2 - 1e-4);
       const large = sweep > Math.PI ? 1 : 0;
-      const pt = (radius, a) => `${round(cx + radius * Math.cos(a))} ${round(cy + radius * Math.sin(a))}`;
+      const pt = (radius: number, a: number) => `${round(cx + radius * Math.cos(a))} ${round(cy + radius * Math.sin(a))}`;
       const path = inner
         ? `M${pt(r, angle)} A${round(r)} ${round(r)} 0 ${large} 1 ${pt(r, end)} L${pt(inner, end)} A${round(inner)} ${round(inner)} 0 ${large} 0 ${pt(inner, angle)}Z`
         : `M${round(cx)} ${round(cy)} L${pt(r, angle)} A${round(r)} ${round(r)} 0 ${large} 1 ${pt(r, end)}Z`;
@@ -164,13 +179,13 @@ export function chartSvg(obj, theme) {
     const { lo, hi, ticks } = scale(obj);
     const horizontal = obj.chartType === "bar";
     const tickLabels = ticks.map((v) => format(v, obj.unit));
-    const longest = (items) => Math.max(...items.map((s) => s.length)) * fs * 0.55;
+    const longest = (items: string[]) => Math.max(...items.map((s) => s.length)) * fs * 0.55;
     const left = Math.min(w * 0.4, (horizontal ? longest(obj.categories) : longest(tickLabels)) + fs * 0.8);
     const bottom = fs * 2;
     const plot = { x: left, y: top + fs * (obj.showValues ? 1.2 : 0.4), w: Math.max(4, w - left - fs * 0.6), h: 0 };
     plot.h = Math.max(4, h - plot.y - bottom);
     const n = obj.categories.length;
-    const valuePos = (v) => (horizontal ? plot.x + ((v - lo) / (hi - lo)) * plot.w : plot.y + plot.h - ((v - lo) / (hi - lo)) * plot.h);
+    const valuePos = (v: number) => (horizontal ? plot.x + ((v - lo) / (hi - lo)) * plot.w : plot.y + plot.h - ((v - lo) / (hi - lo)) * plot.h);
     // Grid and value axis labels.
     ticks.forEach((v, i) => {
       const at = valuePos(v);
@@ -183,7 +198,7 @@ export function chartSvg(obj, theme) {
       }
     });
     const band = (horizontal ? plot.h : plot.w) / n;
-    const bandStart = (i) => (horizontal ? plot.y : plot.x) + band * i;
+    const bandStart = (i: number) => (horizontal ? plot.y : plot.x) + band * i;
     obj.categories.forEach((name, i) => {
       if (horizontal) text(plot.x - fs * 0.5, bandStart(i) + band / 2, name, { anchor: "end", color: p.text });
       else if (n <= 12 || i % Math.ceil(n / 12) === 0) text(bandStart(i) + band / 2, plot.y + plot.h + fs, name, { color: p.text });
@@ -248,17 +263,23 @@ export function chartSvg(obj, theme) {
 }
 
 /** pptxgenjs chart type and options for a chart object (box in inches). */
-export function pptxChart(pptx, obj, theme, box) {
+export function pptxChart(
+  _pptx: PptxGenJS,
+  obj: ChartObject,
+  theme: Theme | null | undefined,
+  box: { x: number; y: number; w: number; h: number },
+) {
   const p = chartPalette(theme);
-  const hex = (value) => value.slice(1);
-  const type = {
-    column: pptx.ChartType.bar,
-    bar: pptx.ChartType.bar,
-    line: pptx.ChartType.line,
-    area: pptx.ChartType.area,
-    pie: pptx.ChartType.pie,
-    doughnut: pptx.ChartType.doughnut,
-  }[obj.chartType];
+  const hex = (value: string) => value.slice(1);
+  const names: Record<ChartObject["chartType"], PptxGenJS.CHART_NAME> = {
+    column: "bar",
+    bar: "bar",
+    line: "line",
+    area: "area",
+    pie: "pie",
+    doughnut: "doughnut",
+  };
+  const type = names[obj.chartType];
   const radial = isRadial(obj.chartType);
   const series = radial ? obj.series.slice(0, 1) : obj.series;
   const data = series.map((s) => ({ name: s.name, labels: obj.categories, values: s.values }));
@@ -266,11 +287,11 @@ export function pptxChart(pptx, obj, theme, box) {
   const fontSize = Math.max(8, Math.min(14, Math.min(obj.w, obj.h) / 30));
   const unit = obj.unit.replace(/"/g, "");
   const numberFormat = unit ? `#,##0.##"${unit}"` : "#,##0.##";
-  const options = {
+  const options: PptxGenJS.IChartOpts = {
     ...box,
     chartColors: (points ?? (radial ? obj.categories.map((_, i) => p.series[i % p.series.length]) : p.series)).map(hex),
     showLegend: obj.showLegend,
-    legendPos: "t",
+    legendPos: "t" as const,
     legendFontFace: p.font,
     legendFontSize: fontSize,
     legendColor: hex(p.text),

@@ -3,18 +3,27 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "vitest";
-import { fileURLToPath } from "node:url";
-import { create } from "./model.js";
+import { beforeAll, test, type TestContext } from "vitest";
+import { bundleRunner } from "../scripts/runnerBundle.mjs";
+import { labels } from "./helpers";
+import { create, object } from "../src/model";
+import type { ImageObject } from "../src/types";
 
-const runner = fileURLToPath(new URL("./runner.cjs", import.meta.url));
+// The test runs the same CommonJS text the plugin writes into its scratch folder.
+let runner = "";
+beforeAll(async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koda-presentation-runner-"));
+  runner = path.join(dir, "handler.cjs");
+  fs.writeFileSync(runner, await bundleRunner());
+  return () => fs.rmSync(dir, { recursive: true, force: true });
+});
 
-function fixture(t) {
+function fixture(t: TestContext) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "koda-presentation-test-"));
   t.onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
   return {
     root,
-    run(request) {
+    run(request: Record<string, unknown>) {
       const cwd = fs.mkdtempSync(path.join(root, "job-"));
       fs.writeFileSync(path.join(cwd, "job.json"), JSON.stringify({ ...request, root }));
       const result = JSON.parse(
@@ -27,7 +36,7 @@ function fixture(t) {
 
 test("slides are separate files and a conflicting or failed commit leaves the saved document intact", (t) => {
   const { root, run } = fixture(t);
-  const document = create("Draft", { title: "Title", subtitle: "Subtitle" });
+  const document = create("Draft", labels);
   const state = { version: 1, document, undo: [], redo: [] };
   const documentId = document.id;
   run({ type: "save", documentId, state, expectedVersion: null });
@@ -38,7 +47,7 @@ test("slides are separate files and a conflicting or failed commit leaves the sa
   assert.throws(() => run({ type: "save", documentId, state, expectedVersion: null }), /Version conflict/);
   const changed = structuredClone(state);
   changed.version++;
-  changed.document.slides[0].objects.push({ kind: "image", resource: "missing" });
+  changed.document.slides[0].objects.push(object<ImageObject>("image", { resource: "missing" }));
   assert.throws(() => run({ type: "save", documentId, state: changed, expectedVersion: 1 }), /image resource/);
   assert.equal(fs.readFileSync(index, "utf8"), data);
 });

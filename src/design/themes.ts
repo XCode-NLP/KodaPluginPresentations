@@ -1,3 +1,5 @@
+import type { ColorRole, FontRole, PresentationDocument, SizeRole, Theme } from "../types";
+
 // Design tokens. A document stores a resolved copy of its theme, and objects keep the role
 // they were given ("accent", "h2", "heading"), so switching the theme repaints the whole deck.
 
@@ -15,16 +17,31 @@ export const COLOR_ROLES = [
   "chart3",
   "chart4",
   "chart5",
-];
-export const FONT_ROLES = ["heading", "body"];
+] as const satisfies readonly ColorRole[];
+export const FONT_ROLES = ["heading", "body"] as const satisfies readonly FontRole[];
 // Sizes relative to a 540-unit-high slide; scaled to the document height.
-export const SIZE_SCALE = { display: 72, h1: 46, h2: 34, h3: 24, body: 20, small: 16, caption: 13 };
-export const SIZE_ROLES = Object.keys(SIZE_SCALE);
+export const SIZE_SCALE: Record<SizeRole, number> = { display: 72, h1: 46, h2: 34, h3: 24, body: 20, small: 16, caption: 13 };
+export const SIZE_ROLES = Object.keys(SIZE_SCALE) as SizeRole[];
 // Below this (in 540-unit terms) text is unreadable from the back of a room.
 export const MIN_READABLE = 13;
 
 // Fonts are limited to faces available on macOS, Windows and in PowerPoint without embedding.
-const theme = (id, name, mood, use, fonts, c, extra = {}) => ({
+export interface CatalogTheme extends Theme {
+  id: string;
+  name: string;
+  mood: string;
+  use: string;
+}
+
+const theme = (
+  id: string,
+  name: string,
+  mood: string,
+  use: string,
+  fonts: Record<FontRole, string>,
+  c: string[],
+  extra: { headingBold?: boolean } = {},
+): CatalogTheme => ({
   id,
   name,
   mood,
@@ -45,11 +62,12 @@ const theme = (id, name, mood, use, fonts, c, extra = {}) => ({
     chart4: c[9],
     chart5: c[10],
   },
+  background: c[0],
   headingBold: true,
   ...extra,
 });
 
-export const THEMES = [
+export const THEMES: CatalogTheme[] = [
   theme(
     "clean",
     "Clean",
@@ -136,10 +154,13 @@ export const THEMES = [
 
 export const DEFAULT_THEME = "clean";
 
-export const themeById = (id) => THEMES.find((item) => item.id === id);
+export const themeById = (id: string): CatalogTheme | undefined => THEMES.find((item) => item.id === id);
 
 /** The theme stored in a document: tokens only, without catalog prose. */
-export function resolvedTheme(id, overrides = {}) {
+export function resolvedTheme(
+  id: string,
+  overrides: { colors?: Partial<Record<ColorRole, string>>; fonts?: Partial<Record<FontRole, string>> } = {},
+): Theme {
   const base = themeById(id);
   if (!base) throw new Error(`Unknown theme: ${id}. Call get_design_system for the list.`);
   const colors = { ...base.colors, ...overrides.colors };
@@ -148,27 +169,32 @@ export function resolvedTheme(id, overrides = {}) {
 }
 
 /** Old documents only have a background; give them the clean tokens on that background. */
-export function themeOf(doc) {
-  const stored = doc.theme ?? {};
-  if (stored.colors && stored.fonts) return stored;
+export function themeOf(doc: Pick<PresentationDocument, "theme">): Theme {
+  const stored: Partial<PresentationDocument["theme"]> = doc.theme ?? {};
+  if (stored.colors && stored.fonts)
+    return { id: stored.id ?? null, background: stored.background ?? stored.colors.background, colors: stored.colors, fonts: stored.fonts, headingBold: stored.headingBold ?? true };
   const base = resolvedTheme(DEFAULT_THEME);
   return { ...base, id: null, background: stored.background ?? base.background, colors: { ...base.colors, background: stored.background ?? base.background } };
 }
 
-export const sizeFor = (role, height) => Math.round((SIZE_SCALE[role] * height) / 540);
+export const sizeFor = (role: SizeRole, height: number): number => Math.round((SIZE_SCALE[role] * height) / 540);
 
 /** Turn a role name or literal into a value. Returns { value, role } where role is null for literals. */
-export function resolveToken(field, value, theme, height) {
+export const isSizeRole = (value: unknown): value is SizeRole => typeof value === "string" && Object.hasOwn(SIZE_SCALE, value);
+export const isFontRole = (value: unknown): value is FontRole => (FONT_ROLES as readonly unknown[]).includes(value);
+export const isColorRole = (value: unknown): value is ColorRole => (COLOR_ROLES as readonly unknown[]).includes(value);
+
+export function resolveToken(field: string, value: unknown, theme: Theme, height: number): { value: unknown; role: string | null } {
   if (typeof value !== "string" && field !== "size") return { value, role: null };
   if (field === "size") {
-    if (typeof value === "string" && SIZE_SCALE[value]) return { value: sizeFor(value, height), role: value };
+    if (isSizeRole(value)) return { value: sizeFor(value, height), role: value };
     return { value, role: null };
   }
   if (field === "font") {
-    if (FONT_ROLES.includes(value)) return { value: theme.fonts[value], role: value };
+    if (isFontRole(value)) return { value: theme.fonts[value], role: value };
     return { value, role: null };
   }
-  if (COLOR_ROLES.includes(value)) return { value: theme.colors[value], role: value };
+  if (isColorRole(value)) return { value: theme.colors[value], role: value };
   return { value, role: null };
 }
 
@@ -183,15 +209,15 @@ export const catalog = () =>
     palette: { background: colors.background, text: colors.text, accent: colors.accent, accent2: colors.accent2 },
   }));
 
-export function luminance(hex) {
-  const channel = (i) => {
+export function luminance(hex: string): number {
+  const channel = (i: number) => {
     const v = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
     return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
   };
   return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
 }
 
-export function contrast(a, b) {
+export function contrast(a: string, b: string): number {
   const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p);
   return (x + 0.05) / (y + 0.05);
 }

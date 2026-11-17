@@ -6,25 +6,40 @@ import {
 } from "@aiden0z/pptx-renderer/browser";
 import PptxGenJS from "pptxgenjs";
 import { jsPDF } from "jspdf";
-import { id, object, validate } from "./model.js";
-import { snapshot } from "./media.js";
-import { pptxChart } from "./chart.js";
+import { id, object, validate } from "./model";
+import { snapshot } from "./media";
+import { themeOf } from "./design/themes";
+import { pptxChart } from "./chart";
+import type { PicNodeData, PresentationData, ShapeNodeData, SlideData, SlideNode } from "@aiden0z/pptx-renderer/browser";
+import type { ImageObject, PresentationDocument, Slide, SlideObject, TextObject } from "./types";
 
-const palette = (xml) => {
+/** The renderer's XML wrapper is not exported by name. */
+type Xml = NonNullable<PicNodeData["fill"]>;
+type Report = (key: string, detail?: unknown) => void;
+type Message = (key: string, detail?: string) => string;
+type Box = { x: number; y: number; w: number; h: number };
+
+function canvas2d(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas 2D is unavailable");
+  return context;
+}
+
+const palette = (xml: Xml | undefined): string | undefined => {
   const value = xml?.child("srgbClr").attr("val");
-  return /^[\da-f]{6}$/i.test(value) ? `#${value}` : undefined;
+  return value && /^[\da-f]{6}$/i.test(value) ? `#${value}` : undefined;
 };
-const toBlob = (canvas) =>
-  new Promise((resolve, reject) =>
+const toBlob = (canvas: HTMLCanvasElement) =>
+  new Promise<Blob>((resolve, reject) =>
     canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG encoding failed")))),
   );
 
-function geometry(node) {
+function geometry(node: SlideNode): Box {
   return { x: node.position.x, y: node.position.y, w: Math.max(1, node.size.w), h: Math.max(1, node.size.h) };
 }
 
-function fontAvailable(font) {
-  const context = document.createElement("canvas").getContext("2d");
+function fontAvailable(font: string): boolean {
+  const context = canvas2d(document.createElement("canvas"));
   const sample = "Широкие буквы · mmmWWWiiil";
   const name = font.replace(/["\\]/g, "");
   return ["serif", "sans-serif", "monospace"].some((fallback) => {
@@ -35,9 +50,10 @@ function fontAvailable(font) {
   });
 }
 
-function simpleShape(node, report) {
+function simpleShape(input: SlideNode, report: Report): SlideObject | null {
+  if (input.nodeType !== "shape") return null;
+  const node: ShapeNodeData = input;
   if (
-    node.nodeType !== "shape" ||
     node.rotation ||
     node.flipH ||
     node.flipV ||
@@ -68,7 +84,7 @@ function simpleShape(node, report) {
   const fontSize = style?.numAttr("sz");
   const alignment = paragraphs[0]?.properties?.attr("algn");
   if (runs.length > 1 || !style || node.fill?.child("schemeClr").exists()) report("textStyle", node.name);
-  return object("text", {
+  return object<TextObject>("text", {
     ...props,
     text: content,
     font,
@@ -80,9 +96,10 @@ function simpleShape(node, report) {
   });
 }
 
-async function originalPicture(presentation, slide, node) {
+async function originalPicture(presentation: PresentationData, slide: SlideData, input: SlideNode): Promise<Blob | null> {
+  if (input.nodeType !== "picture") return null;
+  const node: PicNodeData = input;
   if (
-    node.nodeType !== "picture" ||
     node.rotation ||
     node.flipH ||
     node.flipV ||
@@ -94,25 +111,25 @@ async function originalPicture(presentation, slide, node) {
     (node.presetGeometry && node.presetGeometry !== "rect")
   )
     return null;
-  const rel = slide.rels.get(node.blipEmbed);
+  const rel = node.blipEmbed ? slide.rels.get(node.blipEmbed) : undefined;
   if (!rel || rel.targetMode?.toLowerCase() === "external" || !/\.(png|jpe?g|webp|gif)$/i.test(rel.target)) return null;
   const media = await presentation.mediaResolver?.resolve(rel.target);
   if (!media) return null;
-  const image = await createImageBitmap(new Blob([media.data]), { resizeQuality: "high" });
+  const image = await createImageBitmap(new Blob([media.data as Uint8Array<ArrayBuffer>]), { resizeQuality: "high" });
   try {
     const canvas = document.createElement("canvas");
     const scale = Math.min(1, 1400 / Math.max(image.width, image.height));
     canvas.width = Math.max(1, Math.round(image.width * scale));
     canvas.height = Math.max(1, Math.round(image.height * scale));
-    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    canvas2d(canvas).drawImage(image, 0, 0, canvas.width, canvas.height);
     return toBlob(canvas);
   } finally {
     image.close();
   }
 }
 
-async function flatten(presentation, slide, node, stage) {
-  const errors = [];
+async function flatten(presentation: PresentationData, slide: SlideData, node: SlideNode, stage: HTMLElement) {
+  const errors: unknown[] = [];
   const handle = renderSlide(
     presentation,
     { ...slide, nodes: [node], showMasterSp: false, background: undefined },
@@ -127,7 +144,7 @@ async function flatten(presentation, slide, node, stage) {
     handle.element.style.background = "transparent";
     if (errors.length || !handle.element.childElementCount) return null;
     const full = await snapshot(handle.element, presentation.width, presentation.height, true);
-    const ctx = full.getContext("2d");
+    const ctx = canvas2d(full);
     const pixels = ctx.getImageData(0, 0, full.width, full.height).data;
     let left = full.width,
       top = full.height,
@@ -146,7 +163,7 @@ async function flatten(presentation, slide, node, stage) {
     const canvas = document.createElement("canvas");
     canvas.width = right - left;
     canvas.height = bottom - top;
-    canvas.getContext("2d").drawImage(full, left, top, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+    canvas2d(canvas).drawImage(full, left, top, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
     return {
       blob: await toBlob(canvas),
       props: { x: left / 2, y: top / 2, w: Math.max(1, canvas.width / 2), h: Math.max(1, canvas.height / 2) },
@@ -157,10 +174,16 @@ async function flatten(presentation, slide, node, stage) {
   }
 }
 
-export async function importDeck(buffer, title, stage, saveAsset, message) {
+export async function importDeck(
+  buffer: ArrayBuffer,
+  title: string,
+  stage: HTMLElement,
+  saveAsset: (documentId: string, resource: string, blob: Blob) => Promise<void>,
+  message: Message,
+): Promise<PresentationDocument> {
   const files = await parseZipLazyMedia(buffer, RECOMMENDED_ZIP_LIMITS);
   const source = buildPresentation(files);
-  const doc = {
+  const doc: PresentationDocument = {
     format: 1,
     id: id(),
     title,
@@ -181,18 +204,20 @@ export async function importDeck(buffer, title, stage, saveAsset, message) {
     throw new Error(message("importLimit"));
   for (const slide of source.slides) {
     if (slide.nodes.length > 250) throw new Error(message("importLimit"));
-    const next = { id: id(), objects: [], warnings: [] };
-    const report = (key, detail) => {
-      if (next.warnings.length < 100) next.warnings.push(message(key, String(detail || "").slice(0, 130)));
+    const warnings: string[] = [];
+    const next: Slide = { id: id(), objects: [], warnings };
+    const report: Report = (key, detail) => {
+      if (warnings.length < 100) warnings.push(message(key, String(detail || "").slice(0, 130)));
     };
     const layoutPath = source.slideToLayout.get(slide.index) ?? slide.layoutIndex;
     const layout = source.layouts.get(layoutPath);
-    const master = source.masters.get(source.layoutToMaster.get(layoutPath));
+    const masterPath = source.layoutToMaster.get(layoutPath);
+    const master = masterPath ? source.masters.get(masterPath) : undefined;
     const background = slide.background ?? layout?.background ?? master?.background;
     const backgroundColor = palette(background?.child("bgPr").child("solidFill"));
     if (backgroundColor) next.background = backgroundColor;
-    const hasTemplateShapes = (template) =>
-      template?.spTree
+    const hasTemplateShapes = (template: { spTree: Xml } | undefined) =>
+      !!template?.spTree
         .allChildren()
         .some(({ localName }) => ["sp", "pic", "cxnSp", "grpSp", "graphicFrame"].includes(localName));
     if (
@@ -208,25 +233,27 @@ export async function importDeck(buffer, title, stage, saveAsset, message) {
         continue;
       }
       const name = node.name || node.nodeType;
-      const pictureRel = slide.rels.get(node.blipEmbed ?? node.blipLink);
+      const picture = node.nodeType === "picture" ? node : null;
+      const pictureKey = picture?.blipEmbed ?? picture?.blipLink;
+      const pictureRel = pictureKey ? slide.rels.get(pictureKey) : undefined;
       const externalPicture = pictureRel?.targetMode?.toLowerCase() === "external";
-      if (!externalPicture && !node.isAudio && !node.isVideo && node.nodeType !== "unknown") {
-        const picture = await originalPicture(source, slide, node).catch(() => null);
-        const image = picture
-          ? { blob: picture, props: geometry(node) }
+      if (!externalPicture && !picture?.isAudio && !picture?.isVideo && (node.nodeType as string) !== "unknown") {
+        const original = await originalPicture(source, slide, node).catch(() => null);
+        const image = original
+          ? { blob: original, props: geometry(node) }
           : await flatten(source, slide, node, stage).catch(() => null);
         if (image) {
           const resource = id();
           await saveAsset(doc.id, resource, image.blob);
-          next.objects.push(object("image", { ...image.props, fill: "transparent", resource }));
-          if (!picture) report("flattened", name);
+          next.objects.push(object<ImageObject>("image", { ...image.props, fill: "transparent", resource }));
+          if (!original) report("flattened", name);
           continue;
         }
       }
       report("unsupported", name);
       const box = geometry(node);
       next.objects.push(
-        object("text", {
+        object<TextObject>("text", {
           ...box,
           w: Math.max(140, box.w),
           h: Math.max(34, box.h),
@@ -242,12 +269,12 @@ export async function importDeck(buffer, title, stage, saveAsset, message) {
   return validate(doc);
 }
 
-const hex = (value) => value.slice(1);
-const solid = (value) => value !== "transparent";
+const hex = (value: string) => value.slice(1);
+const solid = (value: string) => value !== "transparent";
 
-export async function exportPowerPoint(doc, imageFor) {
+export async function exportPowerPoint(doc: PresentationDocument, imageFor: (resource: string) => Promise<string>): Promise<Blob> {
   const pptx = new PptxGenJS();
-  const px = (value) => value / 96;
+  const px = (value: number) => value / 96;
   pptx.defineLayout({ name: "KODA", width: px(doc.width), height: px(doc.height) });
   pptx.layout = "KODA";
   pptx.title = doc.title;
@@ -276,23 +303,25 @@ export async function exportPowerPoint(doc, imageFor) {
           color: solid(obj.color) ? hex(obj.color) : "202234",
         });
       } else if (obj.kind === "chart") {
-        const chart = pptxChart(pptx, obj, doc.theme, box);
+        const chart = pptxChart(pptx, obj, themeOf(doc), box);
         page.addChart(chart.type, chart.data, chart.options);
       } else if (obj.kind === "image") {
         page.addImage({ ...box, data: await imageFor(obj.resource) });
       } else {
-        const shape = { rect: pptx.ShapeType.rect, ellipse: pptx.ShapeType.ellipse, line: pptx.ShapeType.line }[
-          obj.kind
-        ];
+        const shape = { rect: pptx.ShapeType.rect, ellipse: pptx.ShapeType.ellipse, line: pptx.ShapeType.line }[obj.kind];
         page.addShape(shape, { ...box, fill, line });
       }
     }
   }
-  return pptx.write({ outputType: "blob" });
+  return (await pptx.write({ outputType: "blob" })) as Blob;
 }
 
-export async function exportPdf(doc, slideElement, stage) {
-  const format = [doc.width, doc.height];
+export async function exportPdf(
+  doc: PresentationDocument,
+  slideElement: (slide: Slide) => Promise<HTMLElement>,
+  stage: HTMLElement,
+): Promise<Blob> {
+  const format: [number, number] = [doc.width, doc.height];
   const orientation = doc.width >= doc.height ? "landscape" : "portrait";
   const pdf = new jsPDF({ format, orientation, unit: "px", hotfixes: ["px_scaling"], compress: true });
   for (const [index, slide] of doc.slides.entries()) {

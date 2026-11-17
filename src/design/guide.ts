@@ -1,6 +1,6 @@
 // The design brief the agent reads before building or restyling a deck.
 
-import { SIZE_SCALE } from "./themes.js";
+import { SIZE_SCALE } from "./themes";
 
 export const DESIGN_GUIDE = `
 # Workflow

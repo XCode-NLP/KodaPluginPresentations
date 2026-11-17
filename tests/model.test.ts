@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { apply, create, selectionFor, travel } from "./model.js";
+import { fields, initial, objectAt } from "./helpers";
+import { apply, selectionFor, travel } from "../src/model";
 
-const labels = { title: "Заголовок", subtitle: "Подзаголовок" };
-const initial = () => ({ version: 1, document: create("Проект", labels), undo: [], redo: [] });
-const rename = (title) => ({ type: "rename", title });
+const rename = (title: string) => ({ type: "rename", title });
 
 test("a failed operation rolls back the entire batch", () => {
   const state = initial();
@@ -20,8 +19,8 @@ test("explicit IDs keep changes on the intended object and versions detect concu
   const selection = selectionFor(state.document, { slideId: slide.id, objectIds: [subtitle.id] });
   const batch = [{ type: "updateObject", slideId: slide.id, objectId: title.id, patch: { text: "Кратко" } }];
   const next = apply(state, 1, batch);
-  assert.equal(next.document.slides[0].objects[0].text, "Кратко");
-  assert.equal(next.document.slides[0].objects[1].text, "Подзаголовок");
+  assert.equal(objectAt(next, 0).text, "Кратко");
+  assert.equal(objectAt(next, 1).text, "Подзаголовок");
   assert.deepEqual(selectionFor(next.document, selection), selection);
   assert.throws(() => apply(next, 1, batch), /Version conflict/);
   assert.throws(() => travel(next, 1, "undo"), /Version conflict/);
@@ -59,6 +58,6 @@ test("an object operation without slideId finds the slide by objectId", () => {
   const slide = state.document.slides[0];
   const object = slide.objects[0];
   const next = apply(state, 1, [{ type: "updateObject", objectId: object.id, patch: { text: "Новый" } }]);
-  assert.equal(next.document.slides[0].objects[0].text, "Новый");
+  assert.equal(objectAt(next, 0).text, "Новый");
   assert.throws(() => apply(state, 1, [{ type: "updateObject", objectId: "nope", patch: {} }]), /Missing slideId/);
 });

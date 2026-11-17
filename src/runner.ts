@@ -1,13 +1,42 @@
-const fs = require("node:fs");
-const path = require("node:path");
-const { createHash, randomUUID } = require("node:crypto");
+// Runs in a separate Node process (ctx.process.runFile) inside a scratch folder: reads job.json,
+// touches only files under the project root and prints a JSON answer. Built to CommonJS text and
+// embedded into the main part.
+import fs from "node:fs";
+import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import type { HistoryState, PresentationDocument, Slide } from "./types";
+
+export interface RunnerJob {
+  type: "list" | "read" | "load" | "save" | "asset-read" | "asset-import" | "asset-remove" | "asset-write" | "preview-write" | "write";
+  root: string;
+  documentId?: string;
+  source?: string;
+  stamp?: string;
+  offset?: number;
+  resource?: string;
+  preview?: string;
+  file?: string;
+  parts?: number;
+  expectedVersion?: number | null;
+  state?: HistoryState;
+}
+
+type PackedDocument = Omit<PresentationDocument, "slides"> & { slides: string[] };
+interface PackedState {
+  version: number;
+  document: PackedDocument;
+  undo: PackedDocument[];
+  redo: PackedDocument[];
+}
+
+const code = (error: unknown): string | undefined => (error as NodeJS.ErrnoException | null)?.code;
 
 const chunkSize = 45 * 1024;
 const fileLimit = 12 * 1024 * 1024;
-const isId = (value) => typeof value === "string" && /^[a-z0-9-]{1,64}$/.test(value);
+const isId = (value: unknown): value is string => typeof value === "string" && /^[a-z0-9-]{1,64}$/.test(value);
 const pngSignature = Buffer.from("89504e470d0a1a0a", "hex");
 
-function inside(root, relative, createParents = false) {
+function inside(root: string, relative: unknown, createParents = false): string {
   const parts = typeof relative === "string" ? relative.split("/") : [];
   if (
     !parts.length ||
@@ -28,18 +57,18 @@ function inside(root, relative, createParents = false) {
       try {
         fs.mkdirSync(current);
       } catch (error) {
-        if (error.code !== "EEXIST") throw error;
+        if (code(error) !== "EEXIST") throw error;
       }
     }
     if (!fs.lstatSync(current).isDirectory()) throw new Error("Expected a directory without symlinks");
   }
-  const target = path.join(current, parts.at(-1));
+  const target = path.join(current, parts.at(-1)!);
   const stat = fs.lstatSync(target, { throwIfNoEntry: false });
   if (stat && !stat.isFile()) throw new Error("Expected a regular file without symlinks");
   return target;
 }
 
-function atomicWrite(target, bytes) {
+function atomicWrite(target: string, bytes: string | Buffer): void {
   const temp = path.join(path.dirname(target), `.${randomUUID()}.tmp`);
   try {
     fs.writeFileSync(temp, bytes, { flag: "wx" });
@@ -49,11 +78,11 @@ function atomicWrite(target, bytes) {
   }
 }
 
-function acquireLock(lock) {
+function acquireLock(lock: string): number {
   try {
     return fs.openSync(lock, "wx");
   } catch (error) {
-    if (error.code !== "EEXIST") throw error;
+    if (code(error) !== "EEXIST") throw error;
     const age = Date.now() - fs.statSync(lock).mtimeMs;
     const pid = Number(fs.readFileSync(lock, "utf8"));
     // A killed handler can leave a lock behind. Let any active handler finish first.
@@ -62,7 +91,7 @@ function acquireLock(lock) {
       try {
         process.kill(pid, 0);
       } catch (checkError) {
-        if (checkError.code !== "ESRCH") throw checkError;
+        if (code(checkError) !== "ESRCH") throw checkError;
         fs.unlinkSync(lock);
         return fs.openSync(lock, "wx");
       }
@@ -73,22 +102,22 @@ function acquireLock(lock) {
   }
 }
 
-function documentJob(root, job) {
+function documentJob(root: string, job: RunnerJob) {
   const base = `presentations/${job.documentId}`;
   const index = inside(root, `${base}/document.json`, job.type === "save");
   if (job.type === "load" && !fs.existsSync(index)) throw new Error("Presentation not found");
   if (job.type === "load") {
     for (let attempt = 0; attempt < 3; attempt++) {
       const serialized = fs.readFileSync(index, "utf8");
-      const state = JSON.parse(serialized);
-      const cache = new Map();
-      const hydrate = (doc) => ({
+      const state: PackedState = JSON.parse(serialized);
+      const cache = new Map<string, Slide>();
+      const hydrate = (doc: PackedDocument): PresentationDocument => ({
         ...doc,
         slides: doc.slides.map((key) => {
           if (!/^[a-f0-9]{64}$/.test(key)) throw new Error("Invalid slide reference");
           if (!cache.has(key))
             cache.set(key, JSON.parse(fs.readFileSync(inside(root, `${base}/slides/${key}.json`), "utf8")));
-          return cache.get(key);
+          return cache.get(key)!;
         }),
       });
       try {
@@ -102,7 +131,7 @@ function documentJob(root, job) {
         fs.writeFileSync("result.json", output, { flag: "wx" });
         return { resultFile: true };
       } catch (error) {
-        if (error.code !== "ENOENT" || fs.readFileSync(index, "utf8") === serialized) throw error;
+        if (code(error) !== "ENOENT" || fs.readFileSync(index, "utf8") === serialized) throw error;
       }
     }
     throw new Error("Presentation changed during read. Try again.");
@@ -113,13 +142,12 @@ function documentJob(root, job) {
   const fd = acquireLock(lock);
   try {
     fs.writeFileSync(fd, String(process.pid));
-    const prior = fs.existsSync(index) ? JSON.parse(fs.readFileSync(index, "utf8")) : null;
+    const prior: PackedState | null = fs.existsSync(index) ? JSON.parse(fs.readFileSync(index, "utf8")) : null;
     if ((prior?.version ?? null) !== job.expectedVersion) throw new Error("Version conflict: reload the presentation");
     const next = job.state;
+    if (!next) throw new Error("Missing presentation state");
     const resources = new Set(
-      next.document.slides.flatMap(({ objects }) =>
-        objects.filter(({ kind }) => kind === "image").map(({ resource }) => resource),
-      ),
+      next.document.slides.flatMap(({ objects }) => objects.flatMap((obj) => (obj.kind === "image" ? [obj.resource] : []))),
     );
     for (const resource of resources) {
       if (!isId(resource)) throw new Error("Invalid image resource ID");
@@ -127,12 +155,12 @@ function documentJob(root, job) {
         if (!fs.existsSync(inside(root, `${base}/resources/${resource}.png`)))
           throw new Error("An image resource is missing");
       } catch (error) {
-        if (error.code === "ENOENT") throw new Error("An image resource is missing");
+        if (code(error) === "ENOENT") throw new Error("An image resource is missing");
         throw error;
       }
     }
-    const keys = new Set();
-    const pack = (doc) => ({
+    const keys = new Set<string>();
+    const pack = (doc: PresentationDocument): PackedDocument => ({
       ...doc,
       slides: doc.slides.map((slide) => {
         const bytes = JSON.stringify(slide);
@@ -145,7 +173,7 @@ function documentJob(root, job) {
         return key;
       }),
     });
-    const packed = {
+    const packed: PackedState = {
       version: next.version,
       document: pack(next.document),
       undo: next.undo.map(pack),
@@ -167,18 +195,18 @@ function documentJob(root, job) {
   }
 }
 
-function listDocuments(root) {
+function listDocuments(root: string) {
   const folder = path.join(root, "presentations");
   const stat = fs.lstatSync(folder, { throwIfNoEntry: false });
   if (stat && !stat.isDirectory()) throw new Error("The presentations folder must be a real directory");
-  const documents = [];
+  const documents: { id: string; title: string }[] = [];
   if (stat) {
     for (const entry of fs.readdirSync(folder, { withFileTypes: true }).slice(0, 2000)) {
       if (!entry.isDirectory() || !isId(entry.name)) continue;
       try {
         const index = inside(root, `presentations/${entry.name}/document.json`);
         if (fs.statSync(index).size > 2_000_000) continue;
-        const { document } = JSON.parse(fs.readFileSync(index, "utf8"));
+        const { document } = JSON.parse(fs.readFileSync(index, "utf8")) as PackedState;
         if (document.id === entry.name && typeof document.title === "string" && document.title.length <= 200) {
           documents.push({ id: document.id, title: document.title });
         }
@@ -192,11 +220,11 @@ function listDocuments(root) {
   return { resultFile: true };
 }
 
-function run(job) {
+function run(job: RunnerJob): unknown {
   const root = fs.realpathSync(job.root);
   if (job.type === "list") return listDocuments(root);
   if (job.type === "read") {
-    if (!/\.pptx$/i.test(job.source)) throw new Error("Expected a .pptx project file");
+    if (typeof job.source !== "string" || !/\.pptx$/i.test(job.source)) throw new Error("Expected a .pptx project file");
     const file = inside(root, job.source);
     const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
     try {
@@ -204,10 +232,11 @@ function run(job) {
       if (!stat.isFile() || stat.size > fileLimit) throw new Error("PPTX exceeds 12 MB");
       const stamp = [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join("/");
       if (job.stamp && job.stamp !== stamp) throw new Error("Source file changed during import");
-      if (!Number.isSafeInteger(job.offset) || job.offset < 0 || job.offset >= stat.size)
+      const offset = job.offset;
+      if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0 || offset >= stat.size)
         throw new Error("Invalid offset or empty source");
-      const data = Buffer.allocUnsafe(Math.min(chunkSize, stat.size - job.offset));
-      const count = fs.readSync(fd, data, 0, data.length, job.offset);
+      const data = Buffer.allocUnsafe(Math.min(chunkSize, stat.size - offset));
+      const count = fs.readSync(fd, data, 0, data.length, offset);
       const after = fs.fstatSync(fd);
       if (count !== data.length || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) {
         throw new Error("Source file changed during import");
@@ -235,7 +264,7 @@ function run(job) {
     if (typeof job.source !== "string" || !/\.png$/i.test(job.source))
       throw new Error("Expected a .png project file; convert other formats to PNG first");
     const fd = fs.openSync(inside(root, job.source), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-    let bytes;
+    let bytes: Buffer;
     try {
       const stat = fs.fstatSync(fd);
       if (!stat.isFile() || !stat.size || stat.size > 2_000_000) throw new Error("Image must be a PNG of at most 2 MB");
@@ -261,8 +290,9 @@ function run(job) {
   }
   const asset = job.type === "asset-write" && isId(job.resource);
   const preview = job.type === "preview-write" && isId(job.preview);
-  const exported = job.type === "write" && ["presentation.pptx", "presentation.pdf"].includes(job.file);
-  if ((!asset && !exported && !preview) || !Number.isSafeInteger(job.parts) || job.parts < 1 || job.parts > 342) {
+  const exported = job.type === "write" && ["presentation.pptx", "presentation.pdf"].includes(job.file ?? "");
+  const parts = job.parts;
+  if ((!asset && !exported && !preview) || typeof parts !== "number" || !Number.isSafeInteger(parts) || parts < 1 || parts > 342) {
     throw new Error("Invalid export job");
   }
   const target = inside(
@@ -280,7 +310,7 @@ function run(job) {
   try {
     try {
       let size = 0;
-      for (let i = 0; i < job.parts; i++) {
+      for (let i = 0; i < parts; i++) {
         const part = fs.readFileSync(inside(process.cwd(), `part-${i}.txt`), "utf8");
         if (part.length > 48 * 1024 || !/^[a-z0-9+/]+={0,2}$/i.test(part)) throw new Error("Invalid export chunk");
         const bytes = Buffer.from(part, "base64");
@@ -304,6 +334,6 @@ function run(job) {
 try {
   console.log(JSON.stringify(run(JSON.parse(fs.readFileSync("job.json", "utf8")))));
 } catch (error) {
-  console.error(error.message);
+  console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 }

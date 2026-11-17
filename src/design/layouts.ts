@@ -2,10 +2,31 @@
 // top and bottom, 8-unit rhythm) and scaled to the document. The agent fills named slots; the
 // engine places, styles and fits the text, so a slide cannot drift off the grid.
 
-import { id, object } from "../model.js";
-import { MIN_READABLE, sizeFor } from "./themes.js";
-import { fitText } from "./text.js";
-import { CHART_TYPES, isRadial } from "../chart.js";
+import { id, object } from "../model";
+import { MIN_READABLE, sizeFor } from "./themes";
+import { fitText } from "./text";
+import { isChartType, isRadial } from "../chart";
+import type { ChartData, ChartSeries, ColorRole, FontRole, ObjectRoles, PresentationDocument, RoleField, ShapeObject, Slide, SizeRole, SlideObject, TextObject, Theme } from "../types";
+
+/** Untrusted agent input: every value is read through str(), list() or explicit checks. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Slots = Record<string, any>;
+export interface ImportedImage {
+  resource: string;
+  width: number;
+  height: number;
+}
+type Images = Record<string, ImportedImage>;
+type Tone = "accent" | "inverse";
+interface TextOptions {
+  size?: SizeRole;
+  font?: FontRole;
+  color?: ColorRole;
+  align?: TextObject["align"];
+  bold?: boolean;
+  italic?: boolean;
+  min?: number;
+}
 
 const M = 64;
 const TOP = 48;
@@ -13,43 +34,47 @@ const W = 960;
 const H = 540;
 const INNER = W - M * 2;
 
-const str = (value, max = 600) => (typeof value === "string" ? value.trim().slice(0, max) : "");
-const list = (value, max) => (Array.isArray(value) ? value.slice(0, max) : []);
+const str = (value: unknown, max = 600): string => (typeof value === "string" ? value.trim().slice(0, max) : "");
+const list = (value: unknown, max: number): Slots[] => (Array.isArray(value) ? value.slice(0, max) : []);
 
-function painter(doc, theme, tone, images) {
+function painter(doc: Pick<PresentationDocument, "width" | "height">, theme: Theme, tone: Tone | null | undefined, images: Images) {
   const sx = doc.width / W;
   const sy = doc.height / H;
-  const objects = [];
+  const objects: SlideObject[] = [];
   const dark = tone === "accent" || tone === "inverse";
-  const swap = {
+  const swaps: Record<Tone, Partial<Record<ColorRole, ColorRole>>> = {
     accent: { text: "onAccent", muted: "onAccent", accent: "onAccent", surface: "accent", line: "onAccent" },
     inverse: { text: "background", muted: "line", surface: "text", line: "muted", background: "text" },
-  }[tone] ?? {};
-  const role = (name) => swap[name] ?? name;
-  const box = (x, y, w, h) => ({ x: x * sx, y: y * sy, w: Math.max(1, w * sx), h: Math.max(1, h * sy) });
-  const paint = (roles) => {
-    const values = {};
-    for (const [field, value] of Object.entries(roles)) {
-      if (field === "size") values.size = sizeFor(value, doc.height);
-      else if (field === "font") values.font = theme.fonts[value];
-      else values[field] = value === "transparent" ? "transparent" : theme.colors[value];
+  };
+  const swap = tone ? swaps[tone] : {};
+  const role = (name: ColorRole): ColorRole => swap[name] ?? name;
+  const box = (x: number, y: number, w: number, h: number) => ({ x: x * sx, y: y * sy, w: Math.max(1, w * sx), h: Math.max(1, h * sy) });
+  const paint = (roles: ObjectRoles) => {
+    const values: { size?: number; font?: string; fill?: string; stroke?: string; color?: string } = {};
+    for (const [field, value] of Object.entries(roles) as [RoleField, string][]) {
+      if (field === "size") values.size = sizeFor(value as SizeRole, doc.height);
+      else if (field === "font") values.font = theme.fonts[value as FontRole];
+      else values[field] = value === "transparent" ? "transparent" : theme.colors[value as ColorRole];
     }
     return values;
   };
-  const clean = (roles) => Object.fromEntries(Object.entries(roles).filter(([, value]) => value !== "transparent"));
+  const clean = (roles: ObjectRoles): ObjectRoles =>
+    Object.fromEntries(Object.entries(roles).filter(([, value]) => value !== "transparent"));
   return {
     objects,
     dark,
     background: { slide: dark ? (tone === "accent" ? "accent" : "text") : null },
-    text(value, x, y, w, h, { size = "body", font = "body", color = "text", align = "left", bold, italic = false, min } = {}) {
-      value = str(value, 2000);
+    text(input: unknown, x: number, y: number, w: number, h: number, { size = "body", font = "body", color = "text", align = "left", bold, italic = false, min }: TextOptions = {}): TextObject | null {
+      const value = str(input, 2000);
       if (!value) return null;
       const roles = { size, font, color: role(color) };
+      const fullSize = sizeFor(size, doc.height);
+      const fontFace = theme.fonts[font];
       const placed = box(x, y, w, h);
       const styled = paint(roles);
       const floor = Math.max(sizeFor("caption", doc.height), ((min ?? MIN_READABLE) * doc.height) / 540);
-      const fit = fitText(value, placed.w, placed.h, styled.size, styled.font, floor);
-      const obj = object("text", {
+      const fit = fitText(value, placed.w, placed.h, fullSize, fontFace, floor);
+      const obj = object<TextObject>("text", {
         ...placed,
         ...styled,
         text: value,
@@ -57,13 +82,13 @@ function painter(doc, theme, tone, images) {
         align,
         italic,
         bold: bold ?? (font === "heading" ? theme.headingBold : false),
-        roles: fit.size === styled.size ? roles : { font: roles.font, color: roles.color },
+        roles: fit.size === fullSize ? roles : { font: roles.font, color: roles.color },
       });
       objects.push(obj);
       return obj;
     },
-    shape(kind, x, y, w, h, fill = "surface", stroke = "transparent") {
-      const roles = clean({ fill: role(fill), stroke: role(stroke) });
+    shape(kind: ShapeObject["kind"], x: number, y: number, w: number, h: number, fill: ColorRole | "background" = "surface", stroke: ColorRole | "transparent" = "transparent"): SlideObject {
+      const roles = clean({ fill: role(fill), stroke: stroke === "transparent" ? stroke : role(stroke) });
       const obj = object(kind, {
         ...box(x, y, w, h),
         fill: "transparent",
@@ -74,19 +99,19 @@ function painter(doc, theme, tone, images) {
       objects.push(obj);
       return obj;
     },
-    line(x, y, w, color = "line") {
+    line(x: number, y: number, w: number, color: ColorRole = "line"): SlideObject {
       const roles = { stroke: role(color) };
       const obj = object("line", { ...box(x, y, w, 1), h: 1, fill: "transparent", ...paint(roles), roles });
       objects.push(obj);
       return obj;
     },
-    chart(x, y, w, h, data) {
+    chart(x: number, y: number, w: number, h: number, data: ChartData): SlideObject {
       const obj = object("chart", { ...box(x, y, w, h), fill: "transparent", stroke: "transparent", ...data });
       objects.push(obj);
       return obj;
     },
     /** Fit an image inside the box without cropping; without an image draw a quiet placeholder block. */
-    image(slot, x, y, w, h, { placeholder = true } = {}) {
+    image(slot: string, x: number, y: number, w: number, h: number, { placeholder = true } = {}): SlideObject | null {
       const image = images[slot];
       if (!image) return placeholder ? this.shape("rect", x, y, w, h, "surface") : null;
       const placed = box(x, y, w, h);
@@ -108,17 +133,26 @@ function painter(doc, theme, tone, images) {
   };
 }
 
-function title(p, value, { y = TOP, h = 90, w = INNER, size = "h2" } = {}) {
+type Painter = ReturnType<typeof painter>;
+
+function title(p: Painter, value: unknown, { y = TOP, h = 90, w = INNER, size = "h2" as SizeRole } = {}) {
   return p.text(value, M, y, w, h, { size, font: "heading" });
 }
 
 /** Columns of equal width across the content area. */
-const columns = (count, gap = 24, left = M, width = INNER) => {
+const columns = (count: number, gap = 24, left = M, width = INNER) => {
   const w = (width - gap * (count - 1)) / count;
   return Array.from({ length: count }, (_, i) => ({ x: left + i * (w + gap), w }));
 };
 
-const LAYOUTS = {
+interface Layout {
+  use: string;
+  tone?: Tone;
+  slots: Record<string, string>;
+  build(p: Painter, s: Slots, images: Images): void;
+}
+
+const LAYOUTS: Record<string, Layout> = {
   title: {
     use: "Opening slide: deck title, one-line promise, author/date",
     slots: { kicker: "text ≤5 words, optional", title: "text ≤10 words", subtitle: "text ≤20 words", footer: "text ≤10 words, author · date" },
@@ -222,11 +256,11 @@ const LAYOUTS = {
     build(p, s) {
       p.text(s.value, M, 96, INNER, 180, { size: "display", font: "heading", color: "accent", bold: true });
       const big = p.objects.at(-1);
-      if (big) {
+      if (big?.kind === "text") {
         const target = Math.round((150 * big.h) / 180);
         if (big.size < target && fitText(big.text, big.w, big.h, target, big.font, target).fits) {
           big.size = target;
-          delete big.roles.size;
+          delete big.roles?.size;
         }
       }
       p.text(s.label, M, 290, 760, 70, { size: "h2", font: "heading" });
@@ -349,9 +383,9 @@ const LAYOUTS = {
     },
     build(p, s) {
       title(p, s.title);
-      const type = CHART_TYPES.includes(s.type) ? s.type : "column";
-      let categories;
-      let series;
+      const type = isChartType(s.type) ? s.type : "column";
+      let categories: string[];
+      let series: ChartSeries[];
       if (Array.isArray(s.series) && s.series.length) {
         categories = list(s.categories, 12).map((item) => str(item, 60));
         series = list(s.series, 5)
@@ -364,7 +398,7 @@ const LAYOUTS = {
       }
       if (!categories.length || !series.length) return;
       if (isRadial(type)) series = series.slice(0, 1).map((item) => ({ ...item, values: item.values.map((v) => Math.max(0, v)) }));
-      let highlight = null;
+      let highlight: number | null = null;
       if (series.length === 1 && (type === "column" || type === "bar")) {
         const values = series[0].values;
         const max = Math.max(...values.map(Math.abs));
@@ -450,7 +484,7 @@ export const layoutCatalog = () =>
   Object.entries(LAYOUTS).map(([key, { use, slots, tone }]) => ({ id: key, use, slots, ...(tone && { tone }) }));
 
 /** Slots that name project PNG files: "image", "people.0.photo". */
-export function imageSlots(layout, slots) {
+export function imageSlots(layout: string, slots: Slots | undefined): Record<string, string> {
   if (layout === "image-split" || layout === "image-full") return typeof slots?.image === "string" ? { image: slots.image } : {};
   if (layout === "team")
     return Object.fromEntries(
@@ -463,16 +497,22 @@ export function imageSlots(layout, slots) {
  * Build a slide. `images` maps slot keys to { resource, width, height } already imported into the
  * document. `tone` overrides the layout default: "default", "accent" or "inverse".
  */
-export function buildLayoutSlide(doc, theme, layout, slots = {}, { images = {}, tone } = {}) {
+export function buildLayoutSlide(
+  doc: Pick<PresentationDocument, "width" | "height">,
+  theme: Theme,
+  layout: string,
+  slots: Slots = {},
+  { images = {}, tone }: { images?: Images; tone?: Tone | "default" } = {},
+): Slide {
   const spec = LAYOUTS[layout];
   if (!spec) throw new Error(`Unknown layout: ${layout}. Call get_design_system for the list.`);
   const chosen = tone && tone !== "default" ? tone : tone === "default" ? null : spec.tone;
   const p = painter(doc, theme, chosen, images);
   spec.build(p, slots ?? {}, images);
   if (!p.objects.length) throw new Error(`Layout ${layout} got no content: fill its slots`);
-  const slide = { id: id(), layout, objects: p.objects };
+  const slide: Slide = { id: id(), layout, objects: p.objects };
   if (chosen === "accent" || chosen === "inverse") {
-    const role = chosen === "accent" ? "accent" : "text";
+    const role: ColorRole = chosen === "accent" ? "accent" : "text";
     slide.background = theme.colors[role];
     slide.roles = { background: role };
   }

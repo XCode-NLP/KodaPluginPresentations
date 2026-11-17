@@ -1,20 +1,31 @@
 // Layout checks the agent can act on: every issue names the slide, the object and a fix.
 
-import { MIN_READABLE, contrast, themeOf } from "./themes.js";
-import { textHeight, wordCount } from "./text.js";
+import { MIN_READABLE, contrast, themeOf } from "./themes";
+import { textHeight, wordCount } from "./text";
+import type { PresentationDocument, Slide, TextObject } from "../types";
+
+type Box = { x: number; y: number; w: number; h: number };
+export interface LintIssue {
+  slide?: number;
+  slideId?: string;
+  objectId?: string;
+  severity: "error" | "warning";
+  rule: string;
+  message: string;
+}
 
 const PLACEHOLDERS = new Set(["Title", "Subtitle", "Text", "Caption", "Заголовок", "Подзаголовок", "Текст", "Подпись"]);
 
-const inside = (point, obj) => point.x >= obj.x && point.x <= obj.x + obj.w && point.y >= obj.y && point.y <= obj.y + obj.h;
-const overlap = (a, b) => {
+const inside = (point: { x: number; y: number }, obj: Box) => point.x >= obj.x && point.x <= obj.x + obj.w && point.y >= obj.y && point.y <= obj.y + obj.h;
+const overlap = (a: Box, b: Box) => {
   const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
   const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
   return w > 0 && h > 0 ? w * h : 0;
 };
 
 /** The color under the middle of a text box: the topmost filled shape below it, else the slide. */
-function backdrop(slide, index, background) {
-  const obj = slide.objects[index];
+function backdrop(slide: Slide, index: number, background: string): string | null {
+  const obj = slide.objects[index] as TextObject;
   const center = { x: obj.x + obj.w / 2, y: obj.y + Math.min(obj.h, obj.size * 1.2) / 2 };
   for (let i = index - 1; i >= 0; i--) {
     const below = slide.objects[i];
@@ -24,16 +35,16 @@ function backdrop(slide, index, background) {
   return background;
 }
 
-export function lintSlide(doc, slide, position) {
-  const issues = [];
+export function lintSlide(doc: PresentationDocument, slide: Slide, position: number): LintIssue[] {
+  const issues: LintIssue[] = [];
   const scale = doc.height / 540;
   const marginX = doc.width * 0.04;
   const marginY = doc.height * 0.04;
   const background = slide.background ?? themeOf(doc).background;
-  const add = (severity, rule, message, objectId) =>
+  const add = (severity: LintIssue["severity"], rule: string, message: string, objectId?: string) =>
     issues.push({ slide: position + 1, slideId: slide.id, ...(objectId && { objectId }), severity, rule, message });
   let words = 0;
-  const texts = [];
+  const texts: TextObject[] = [];
   slide.objects.forEach((obj, index) => {
     const right = obj.x + obj.w;
     const bottom = obj.y + obj.h;
@@ -76,7 +87,7 @@ export function lintSlide(doc, slide, position) {
     }
   }
   // Edges that almost, but not quite, line up read as mistakes.
-  const lefts = texts.filter((obj) => obj.align === "left").map((obj) => [obj.x, obj.id]);
+  const lefts = texts.filter((obj) => obj.align === "left").map((obj): [number, string] => [obj.x, obj.id]);
   for (const [x, key] of lefts) {
     const near = lefts.find(([other, otherKey]) => otherKey !== key && Math.abs(other - x) > 0.5 && Math.abs(other - x) < 8 * scale);
     if (near && x > near[0]) add("warning", "alignment", `left edge ${Math.round(x)} is ${Math.round(x - near[0])} units off ${near[1]}; align to ${Math.round(near[0])}`, key);
@@ -96,14 +107,14 @@ export function lintSlide(doc, slide, position) {
   return issues;
 }
 
-export function lintDeck(doc, slideIds) {
+export function lintDeck(doc: PresentationDocument, slideIds?: string[] | null) {
   const wanted = slideIds?.length ? new Set(slideIds) : null;
-  const issues = [];
+  const issues: LintIssue[] = [];
   doc.slides.forEach((slide, i) => {
     if (!wanted || wanted.has(slide.id)) issues.push(...lintSlide(doc, slide, i));
   });
   if (!wanted) {
-    const fonts = new Set(doc.slides.flatMap((slide) => slide.objects.filter((obj) => obj.kind === "text").map((obj) => obj.font)));
+    const fonts = new Set(doc.slides.flatMap((slide) => slide.objects.flatMap((obj) => (obj.kind === "text" ? [obj.font] : []))));
     if (fonts.size > 2) issues.push({ severity: "warning", rule: "fonts", message: `${fonts.size} font families in the deck (${[...fonts].join(", ")}); use the theme's heading and body fonts` });
     for (let i = 2; i < doc.slides.length; i++) {
       const run = [doc.slides[i - 2], doc.slides[i - 1], doc.slides[i]].map((slide) => slide.layout);

@@ -5,17 +5,18 @@
     "en": "Presentations"
   },
   "description": {
-    "ru": "Презентации рядом с чатом",
-    "en": "Presentations alongside chat"
+    "ru": "Презентации рядом с чатом: агент собирает слайды по дизайн-системе, вы правите их в панели, экспорт в PPTX и PDF.",
+    "en": "Presentations alongside chat: the agent builds slides from a design system, you edit them in the panel, export to PPTX and PDF."
   },
   "version": "0.2.0",
-  "publisher": "Koda Examples",
+  "publisher": "Koda",
   "engines": {
     "koda": ">=1.4.0",
     "sdk": "1"
   },
-  "main": "main.js",
-  "ui": "ui/index.html",
+  "icon": "icon.svg",
+  "main": "bundle/main.js",
+  "ui": "bundle/ui/index.html",
   "permissions": [
     "project.read",
     "project.write",

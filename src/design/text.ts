@@ -3,7 +3,7 @@
 
 export const LINE_HEIGHT = 1.16;
 
-const FACTORS = {
+const FACTORS: Record<string, number> = {
   arial: 0.52,
   helvetica: 0.52,
   "trebuchet ms": 0.52,
@@ -15,7 +15,7 @@ const FACTORS = {
   impact: 0.46,
 };
 
-function charWidth(font, text) {
+function charWidth(font: string, text: string): number {
   const base = FACTORS[String(font).toLowerCase()] ?? 0.55;
   const letters = text.replace(/\s/g, "");
   if (!letters) return base;
@@ -25,7 +25,7 @@ function charWidth(font, text) {
 }
 
 /** Number of wrapped lines a text takes in a box of the given width. */
-export function lineCount(text, width, size, font) {
+export function lineCount(text: string, width: number, size: number, font: string): number {
   const glyph = charWidth(font, text) * size;
   const perLine = Math.max(1, Math.floor(width / glyph));
   let lines = 0;
@@ -50,11 +50,11 @@ export function lineCount(text, width, size, font) {
   return lines;
 }
 
-export const textHeight = (text, width, size, font, lineHeight = LINE_HEIGHT) =>
+export const textHeight = (text: string, width: number, size: number, font: string, lineHeight = LINE_HEIGHT): number =>
   lineCount(text, width, size, font) * size * lineHeight;
 
 /** Shrink the size until the text fits the box, not below minSize. */
-export function fitText(text, w, h, size, font, minSize) {
+export function fitText(text: string, w: number, h: number, size: number, font: string, minSize: number): { size: number; fits: boolean } {
   let current = size;
   while (current > minSize && textHeight(text, w, current, font) > h) {
     current = Math.max(minSize, Math.floor(current * 0.93));
@@ -62,4 +62,4 @@ export function fitText(text, w, h, size, font, minSize) {
   return { size: current, fits: textHeight(text, w, current, font) <= h + 0.5 };
 }
 
-export const wordCount = (text) => String(text).split(/\s+/).filter(Boolean).length;
+export const wordCount = (text: string): number => String(text).split(/\s+/).filter(Boolean).length;
